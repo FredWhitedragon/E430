@@ -3,20 +3,6 @@
 > 来源：用户提供的 `Help_ API - e621.html`（[原页面](https://e621.net/help/api)）。本文按上传文件整理，保留英文技术说明、参数名、返回字段及示例，移除网页导航并展开折叠内容；未联网核验或补充外部文档。
 > 原页面说明：下列接口文档并非持续维护，可能不准确或过时，较新的文档请参阅文内 OpenAPI 链接。原始示例中的占位符、拼写及 JSON 格式问题按原文保留，不保证可直接执行；认证示例中的 API key 为原文标注的虚构示例。
 
-## 目录
-
-- [Database export](#dbexport)
-- [API](#api)
-- [Basic Concepts](#basics)
-- [OpenAPI Specification](#spec)
-- [Posts](#posts)
-- [Favorites](#favorites)
-- [Tags](#tags)
-- [Tag Aliases](#tag_aliases)
-- [Notes](#notes)
-- [Pools](#pools)
-- [API Endpoint Summary](#endpoints)
-
 ## Database export <span id="dbexport"></span>
 
 If you are looking for bulk data, or are expecting to do tens of thousands of lookups, please use the daily data exports available at <https://e621.net/db_export/>
