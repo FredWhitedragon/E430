@@ -1,5 +1,6 @@
 package com.example.e430.search.ui
 
+import android.app.DatePickerDialog
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -9,12 +10,16 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.BasicTextField
@@ -25,9 +30,12 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +55,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -58,11 +67,16 @@ import com.example.e430.R
 import com.example.e430.core.ui.theme.E430Blue
 import com.example.e430.core.ui.theme.E430Gold
 import com.example.e430.presets.model.SearchPreset
+import com.example.e430.search.model.RatingFilter
+import com.example.e430.search.model.SearchDateRange
+import com.example.e430.search.model.SearchFilterQuery
+import com.example.e430.search.model.SearchSort
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.time.LocalDate
 import kotlin.math.hypot
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -249,6 +263,8 @@ fun SearchHeader(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.surface)
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 ) {
                     if (showingPresets) {
@@ -270,16 +286,246 @@ fun SearchHeader(
                         SearchDropDownRow(stringResource(R.string.import_preset)) {
                             showingPresets = true
                         }
-                        Text(
-                            text = stringResource(R.string.search_filters),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+                        SearchFilters(
+                            query = query,
+                            onQueryChange = onQueryChange,
                         )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SearchFilters(
+    query: String,
+    onQueryChange: (String) -> Unit,
+) {
+    val filters = remember(query) { SearchFilterQuery.parse(query) }
+    FilterHeading(stringResource(R.string.search_filters))
+    FilterHeading(stringResource(R.string.rating))
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        RatingFilter.entries.forEach { rating ->
+            val label = when (rating) {
+                RatingFilter.Safe -> stringResource(R.string.rating_safe)
+                RatingFilter.Questionable -> stringResource(R.string.rating_questionable)
+                RatingFilter.Explicit -> stringResource(R.string.rating_explicit)
+            }
+            FilterChip(
+                selected = filters.rating == rating,
+                onClick = {
+                    val selection = rating.takeUnless { filters.rating == rating }
+                    onQueryChange(
+                        SearchFilterQuery.withRating(
+                            query,
+                            selection,
+                            filters.ratingExcluded,
+                        ),
+                    )
+                },
+                label = { Text(label) },
+            )
+        }
+    }
+    ToggleRow(
+        label = stringResource(R.string.exclude_rating),
+        checked = filters.ratingExcluded,
+        enabled = filters.rating != null,
+        onCheckedChange = { excluded ->
+            onQueryChange(SearchFilterQuery.withRating(query, filters.rating, excluded))
+        },
+    )
+
+    FilterHeading(stringResource(R.string.sort_by))
+    SortRow(
+        options = listOf(
+            SearchSort.Date to stringResource(R.string.date),
+            SearchSort.Favorites to stringResource(R.string.favorite_count),
+        ),
+        selected = filters.sort,
+        onSelect = { sort ->
+            onQueryChange(
+                SearchFilterQuery.withSort(
+                    query,
+                    sort.takeUnless { filters.sort == sort },
+                    filters.ascending,
+                ),
+            )
+        },
+    )
+    SortRow(
+        options = listOf(
+            SearchSort.Score to stringResource(R.string.score),
+            SearchSort.Comments to stringResource(R.string.comment_count),
+        ),
+        selected = filters.sort,
+        onSelect = { sort ->
+            onQueryChange(
+                SearchFilterQuery.withSort(
+                    query,
+                    sort.takeUnless { filters.sort == sort },
+                    filters.ascending,
+                ),
+            )
+        },
+    )
+    ToggleRow(
+        label = stringResource(R.string.ascending),
+        checked = filters.ascending,
+        enabled = filters.sort != null,
+        onCheckedChange = { ascending ->
+            onQueryChange(SearchFilterQuery.withSort(query, filters.sort, ascending))
+        },
+    )
+
+    FilterHeading(stringResource(R.string.time_period))
+    val today = LocalDate.now().toString()
+    val endDate = filters.dateRange.to.ifBlank { today }
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        DatePickerButton(
+            value = filters.dateRange.from,
+            label = stringResource(
+                R.string.date_from_value,
+                filters.dateRange.from.ifBlank { stringResource(R.string.not_set) },
+            ),
+            onDateSelected = { from ->
+                onQueryChange(
+                    SearchFilterQuery.withDateRange(
+                        query,
+                        SearchDateRange(from = from, to = endDate),
+                    ),
+                )
+            },
+            modifier = Modifier.weight(1f),
+        )
+        DatePickerButton(
+            value = endDate,
+            label = stringResource(R.string.date_to_value, endDate),
+            enabled = filters.dateRange.from.isNotBlank(),
+            onDateSelected = { to ->
+                onQueryChange(
+                    SearchFilterQuery.withDateRange(
+                        query,
+                        SearchDateRange(from = filters.dateRange.from, to = to),
+                    ),
+                )
+            },
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Text(
+        text = stringResource(R.string.date_filter_hint),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
+    )
+    OutlinedButton(
+        onClick = {
+            onQueryChange(SearchFilterQuery.withDateRange(query, SearchDateRange()))
+        },
+        enabled = filters.dateRange.from.isNotBlank(),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(stringResource(R.string.clear_time_period))
+    }
+}
+
+@Composable
+private fun FilterHeading(label: String) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
+    )
+}
+
+@Composable
+private fun SortRow(
+    options: List<Pair<SearchSort, String>>,
+    selected: SearchSort?,
+    onSelect: (SearchSort) -> Unit,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        options.forEach { (sort, label) ->
+            FilterChip(
+                selected = selected == sort,
+                onClick = { onSelect(sort) },
+                label = { Text(label) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToggleRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled) { onCheckedChange(!checked) }
+            .padding(vertical = 2.dp),
+    ) {
+        Text(
+            text = label,
+            color = if (enabled) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+            },
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+        )
+    }
+}
+
+@Composable
+private fun DatePickerButton(
+    value: String,
+    label: String,
+    onDateSelected: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val context = LocalContext.current
+    OutlinedButton(
+        onClick = {
+            val initialDate = runCatching { LocalDate.parse(value) }.getOrElse { LocalDate.now() }
+            DatePickerDialog(
+                context,
+                { _, year, month, day ->
+                    onDateSelected(LocalDate.of(year, month + 1, day).toString())
+                },
+                initialDate.year,
+                initialDate.monthValue - 1,
+                initialDate.dayOfMonth,
+            ).show()
+        },
+        enabled = enabled,
+        modifier = modifier,
+    ) {
+        Text(label, maxLines = 1)
     }
 }
 

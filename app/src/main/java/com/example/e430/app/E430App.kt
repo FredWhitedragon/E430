@@ -1,9 +1,13 @@
 package com.example.e430.app
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.annotation.DrawableRes
@@ -30,6 +34,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -47,6 +53,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -68,6 +75,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.core.content.ContextCompat
@@ -102,6 +110,8 @@ import com.example.e430.posts.detail.model.PoolNavigationInfo
 import com.example.e430.posts.detail.ui.PostDetailRoute
 import com.example.e430.posts.detail.ui.PostDetailViewModel
 import com.example.e430.search.ui.SearchHeader
+import com.example.e430.settings.data.AppLanguageManager
+import com.example.e430.settings.model.AppLanguage
 import com.example.e430.settings.ui.SettingsScreen
 import com.example.e430.settings.ui.SettingsViewModel
 import kotlinx.coroutines.launch
@@ -119,6 +129,8 @@ private enum class Destination(
 
 private const val MONTHLY_POPULAR_HOME_QUERY = "date:1_month_ago.. order:score"
 private const val MAX_NAVIGATION_LEVEL = 6
+private const val EXIT_CONFIRMATION_WINDOW_MILLIS = 2_000L
+private const val PROJECT_REPOSITORY_URL = "https://github.com/FredWhitedragon/E430"
 
 @Composable
 fun E430App() {
@@ -187,6 +199,7 @@ private fun E430Home(
     val downloadDirectory by settingsViewModel.downloadDirectory.collectAsStateWithLifecycle()
     val prefetchOnMetered by settingsViewModel.prefetchOnMetered.collectAsStateWithLifecycle()
     val videoLoop by settingsViewModel.videoLoop.collectAsStateWithLifecycle()
+    val appLanguage = remember(context) { AppLanguageManager.selectedLanguage(context) }
     val isNetworkMetered by rememberIsActiveNetworkMetered()
     val prefetchEnabled = !isNetworkMetered || prefetchOnMetered
     var selectedDestinationName by rememberSaveable { mutableStateOf(Destination.Home.name) }
@@ -529,9 +542,23 @@ private fun E430Home(
     }
     }
 
+    @Composable
+    fun PostDetailOverlay() {
     currentDetailId?.let { postId ->
         val detailSite = E621Site.entries.firstOrNull { it.name == detailSiteName } ?: site
         val detailAccount = accountState.account?.takeIf { it.site == detailSite }
+        val pageLevel = (if (activePoolId != null) 3 else 2) + postBackStack.size
+        fun handleDetailBack(requestExit: () -> Unit) {
+            val staysOnPost = postBackStack.isNotEmpty() &&
+                !(pageLevel >= MAX_NAVIGATION_LEVEL && activePoolId != null)
+            if (staysOnPost) returnFromPost(postId) else requestExit()
+        }
+        SecondaryPage(
+            onExited = { currentDetailId?.let(::returnFromPost) },
+            onBackRequested = ::handleDetailBack,
+            backHandlerEnabled = poolReturnPostId == null,
+            layerZIndex = 2f,
+        ) { requestExit ->
         AnimatedContent(
             targetState = postId,
             contentKey = { it },
@@ -543,11 +570,7 @@ private fun E430Home(
                     initialIndex >= 0 && targetIndex < initialIndex -> -1
                     else -> detailSlideDirection
                 }
-                val direction = if (activePoolId != null && activeTag == null) {
-                    -sequenceDirection
-                } else {
-                    sequenceDirection
-                }
+                val direction = sequenceDirection
                 if (direction == 0) {
                     EnterTransition.None togetherWith ExitTransition.None
                 } else {
@@ -581,7 +604,7 @@ private fun E430Home(
             Column(Modifier.fillMaxSize()) {
                 SecondaryHeader(
                     title = stringResource(R.string.post_number, animatedPostId),
-                    onBack = { returnFromPost(animatedPostId) },
+                    onBack = { handleDetailBack(requestExit) },
                 )
                 PostDetailRoute(
                     site = detailSite,
@@ -608,11 +631,14 @@ private fun E430Home(
                         PoolNavigationInfo(pool.id, pool.name, pool.postIds)
                     },
                     onPoolClick = { pool ->
-                        activePoolId = pool.id
-                        activePoolTitle = pool.name
-                        poolReturnPostId = animatedPostId
-                        activeTag = null
-                        currentDetailId = null
+                        if (activePoolId == pool.id && poolReturnPostId == null && activeTag == null) {
+                            requestExit()
+                        } else {
+                            activePoolId = pool.id
+                            activePoolTitle = pool.name
+                            poolReturnPostId = animatedPostId
+                            activeTag = null
+                        }
                     },
                     onPoolPostClick = { pool, targetIndex, direction ->
                         activePoolId = pool.id
@@ -628,8 +654,8 @@ private fun E430Home(
                         detailSlideDirection = 1
                         currentDetailId = relatedId
                     },
-                    onPrevious = { moveDetail(if (activePoolId != null && activeTag == null) 1 else -1) },
-                    onNext = { moveDetail(if (activePoolId != null && activeTag == null) -1 else 1) },
+                    onPrevious = { moveDetail(-1) },
+                    onNext = { moveDetail(1) },
                     onRequireLogin = {
                         Toast.makeText(context, R.string.login_required, Toast.LENGTH_SHORT).show()
                     },
@@ -661,7 +687,8 @@ private fun E430Home(
                 )
             }
         }
-        return
+        }
+    }
     }
 
     @Composable
@@ -679,6 +706,7 @@ private fun E430Home(
                 activePoolId = null
                 if (returnPost != null) currentDetailId = returnPost
             },
+            layerZIndex = if (poolReturnPostId != null) 3f else 1f,
         ) { onBack ->
             Column(
                 modifier = Modifier
@@ -708,6 +736,8 @@ private fun E430Home(
     }
     }
 
+    @Composable
+    fun TagOverlay() {
     activeTag?.let { tag ->
         Column(
             modifier = Modifier
@@ -741,7 +771,7 @@ private fun E430Home(
                 modifier = Modifier.weight(1f),
             )
         }
-        return
+    }
     }
 
     LaunchedEffect(openDrawerOnMain) {
@@ -761,12 +791,17 @@ private fun E430Home(
                 siteName = site.displayName,
                 useE926 = useE926,
                 useDarkTheme = useDarkTheme,
+                appLanguage = appLanguage,
                 onDestinationClick = {
                     selectedDestinationName = it.name
                     scope.launch { drawerState.close() }
                 },
                 onSiteChange = { useE926 = it },
                 onDarkThemeChange = onDarkThemeChange,
+                onLanguageChange = { language ->
+                    AppLanguageManager.setLanguage(context, language)
+                    context.findActivity()?.recreate()
+                },
                 onPresetsClick = {
                     presetsReturnToSettings = false
                     presetsVisible = true
@@ -896,19 +931,54 @@ private fun E430Home(
             }
         }
     }
+    val drawerHandlesBack = drawerState.currentValue == DrawerValue.Open ||
+        drawerState.targetValue == DrawerValue.Open
+    BackHandler(enabled = drawerHandlesBack) {
+        scope.launch { drawerState.close() }
+    }
+    var lastExitBackAt by remember { mutableLongStateOf(0L) }
+    BackHandler(
+        enabled = !drawerHandlesBack &&
+            currentDetailId == null &&
+            activeTag == null &&
+            activePoolId == null &&
+            !settingsVisible &&
+            !presetsVisible &&
+            !accountVisible &&
+            !loginDialogVisible,
+    ) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastExitBackAt <= EXIT_CONFIRMATION_WINDOW_MILLIS) {
+            context.findActivity()?.finish()
+        } else {
+            lastExitBackAt = now
+            Toast.makeText(context, R.string.press_back_again_to_exit, Toast.LENGTH_SHORT).show()
+        }
+    }
     PoolDetailOverlay()
+    TagOverlay()
+    PostDetailOverlay()
     DrawerSecondaryOverlay()
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 @Composable
 private fun SecondaryPage(
     onExited: () -> Unit,
+    onBackRequested: ((requestExit: () -> Unit) -> Unit)? = null,
+    backHandlerEnabled: Boolean = true,
+    layerZIndex: Float = 1f,
     content: @Composable (onBack: () -> Unit) -> Unit,
 ) {
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
-            .zIndex(1f),
+            .zIndex(layerZIndex),
     ) {
         val density = LocalDensity.current
         val widthPx = with(density) { maxWidth.toPx() }
@@ -927,7 +997,9 @@ private fun SecondaryPage(
         LaunchedEffect(Unit) {
             offset.animateTo(0f, animationSpec = tween(260))
         }
-        BackHandler(onBack = requestExit)
+        BackHandler(enabled = backHandlerEnabled) {
+            if (onBackRequested == null) requestExit() else onBackRequested(requestExit)
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1028,9 +1100,11 @@ private fun AppDrawer(
     siteName: String,
     useE926: Boolean,
     useDarkTheme: Boolean,
+    appLanguage: AppLanguage,
     onDestinationClick: (Destination) -> Unit,
     onSiteChange: (Boolean) -> Unit,
     onDarkThemeChange: (Boolean) -> Unit,
+    onLanguageChange: (AppLanguage) -> Unit,
     onPresetsClick: () -> Unit,
     onMoreSettingsClick: () -> Unit,
     onAccountClick: () -> Unit,
@@ -1117,6 +1191,10 @@ private fun AppDrawer(
             checked = useDarkTheme,
             onCheckedChange = onDarkThemeChange,
         )
+        LanguageSelector(
+            selectedLanguage = appLanguage,
+            onLanguageChange = onLanguageChange,
+        )
         NavigationDrawerItem(
             label = { Text(stringResource(R.string.more_settings)) },
             selected = false,
@@ -1135,6 +1213,100 @@ private fun AppDrawer(
             },
             onClick = onMoreSettingsClick,
             modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        AppDrawerFooter()
+    }
+}
+
+@Composable
+private fun LanguageSelector(
+    selectedLanguage: AppLanguage,
+    onLanguageChange: (AppLanguage) -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val englishLabel = stringResource(R.string.language_english)
+    val simplifiedChineseLabel = stringResource(R.string.language_simplified_chinese)
+    fun label(language: AppLanguage): String = when (language) {
+        AppLanguage.English -> englishLabel
+        AppLanguage.SimplifiedChinese -> simplifiedChineseLabel
+    }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        NavigationDrawerItem(
+            label = { Text(stringResource(R.string.language)) },
+            selected = false,
+            badge = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(label(selectedLanguage))
+                    Icon(
+                        painter = painterResource(R.drawable.ic_chevron_right),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .graphicsLayer(rotationZ = if (expanded) -90f else 90f),
+                    )
+                }
+            },
+            onClick = { expanded = true },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            AppLanguage.entries.forEach { language ->
+                DropdownMenuItem(
+                    text = { Text(label(language)) },
+                    onClick = {
+                        expanded = false
+                        if (language != selectedLanguage) onLanguageChange(language)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppDrawerFooter() {
+    val context = LocalContext.current
+    val versionName = remember(context) {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+    }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 28.dp, vertical = 24.dp),
+    ) {
+        HorizontalDivider(modifier = Modifier.padding(bottom = 16.dp))
+        Text(
+            text = stringResource(R.string.app_name_and_version, versionName),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = stringResource(R.string.third_party_disclaimer),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Text(
+            text = stringResource(R.string.project_repository),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .clickable {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, PROJECT_REPOSITORY_URL.toUri()),
+                        )
+                    }.onFailure {
+                        Toast.makeText(context, R.string.open_link_failed, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .padding(vertical = 8.dp),
         )
     }
 }

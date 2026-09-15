@@ -17,7 +17,7 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1"
+        versionName = "0.1.0-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -38,8 +38,14 @@ android {
     buildFeatures {
         compose = true
     }
+    bundle {
+        language {
+            enableSplit = false
+        }
+    }
     sourceSets {
         getByName("main").res.directories.add(rootProject.file("Language/en").path)
+        getByName("main").res.directories.add(rootProject.file("Language/zh-s").path)
     }
 }
 
