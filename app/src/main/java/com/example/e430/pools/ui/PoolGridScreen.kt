@@ -1,6 +1,7 @@
 package com.example.e430.pools.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -30,6 +31,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.pluralStringResource
@@ -42,12 +44,14 @@ import com.example.e430.R
 import com.example.e430.core.ui.RemotePreviewImage
 import com.example.e430.pools.model.PoolPreview
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 
 @Composable
 fun PoolGridRoute(
     request: PoolGridRequest,
     viewModel: PoolGridViewModel,
     modifier: Modifier = Modifier,
+    onPoolClick: (PoolPreview) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(request) { viewModel.show(request) }
@@ -56,6 +60,7 @@ fun PoolGridRoute(
         onRefresh = viewModel::refresh,
         onRetry = viewModel::refresh,
         onLoadMore = viewModel::loadMore,
+        onPoolClick = onPoolClick,
         modifier = modifier,
     )
 }
@@ -67,9 +72,17 @@ private fun PoolGridScreen(
     onRefresh: () -> Unit,
     onRetry: () -> Unit,
     onLoadMore: () -> Unit,
+    onPoolClick: (PoolPreview) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val gridState = rememberLazyStaggeredGridState()
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(gridState) {
+        snapshotFlow { gridState.isScrollInProgress }
+            .distinctUntilChanged()
+            .filter { it }
+            .collect { focusManager.clearFocus() }
+    }
     LaunchedEffect(gridState, uiState.items.size) {
         snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
             .distinctUntilChanged()
@@ -116,7 +129,9 @@ private fun PoolGridScreen(
                         }
                     }
                 }
-                items(uiState.items, key = PoolPreview::id) { pool -> PoolCard(pool) }
+                items(uiState.items, key = PoolPreview::id) { pool ->
+                    PoolCard(pool, onClick = { onPoolClick(pool) })
+                }
                 if (uiState.isLoadingMore) {
                     item(span = StaggeredGridItemSpan.FullLine) {
                         Box(
@@ -146,7 +161,7 @@ private fun PoolGridScreen(
 }
 
 @Composable
-private fun PoolCard(pool: PoolPreview) {
+private fun PoolCard(pool: PoolPreview, onClick: () -> Unit) {
     var loadFailed by remember(pool.coverUrl) { mutableStateOf(false) }
     if (loadFailed || pool.coverUrl == null) return
     val aspectRatio = (pool.coverWidth.toFloat() / pool.coverHeight).coerceIn(0.7f, 1.6f)
@@ -154,6 +169,7 @@ private fun PoolCard(pool: PoolPreview) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         shape = RoundedCornerShape(0.dp),
+        modifier = Modifier.clickable(onClick = onClick),
     ) {
         RemotePreviewImage(
             url = pool.coverUrl,

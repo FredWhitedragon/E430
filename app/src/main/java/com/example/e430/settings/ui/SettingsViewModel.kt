@@ -7,11 +7,8 @@ import com.example.e430.posts.model.HomeSort
 import com.example.e430.settings.data.SettingsRepository
 import com.example.e430.settings.model.ImageQualityPreference
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class SettingsViewModel(
@@ -22,49 +19,34 @@ class SettingsViewModel(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = HomeSort.Latest,
     )
-    val imageQuality = repository.imageQuality.stateIn(
+    val meteredImageQuality = repository.meteredImageQuality.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
-        ImageQualityPreference.Auto,
+        ImageQualityPreference.Low,
+    )
+    val wifiImageQuality = repository.wifiImageQuality.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        ImageQualityPreference.Medium,
     )
     val videoAutoPlay = repository.videoAutoPlay.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val videoMuted = repository.videoMuted.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val tagsCollapsed = repository.tagsCollapsed.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val downloadDirectory = repository.downloadDirectory.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "E430")
-    private val _customHomeQuery = MutableStateFlow("")
-    val customHomeQuery: StateFlow<String> = _customHomeQuery.asStateFlow()
-    private var customHomeQueryLoaded = false
-    private var customHomeQueryWriteJob: Job? = null
-
-    init {
-        viewModelScope.launch {
-            repository.customHomeQuery.collect { storedQuery ->
-                if (!customHomeQueryLoaded) {
-                    _customHomeQuery.value = storedQuery
-                    customHomeQueryLoaded = true
-                }
-            }
-        }
-    }
-
+    val prefetchOnMetered = repository.prefetchOnMetered.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    val videoLoop = repository.videoLoop.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     fun setHomeSort(sort: HomeSort) {
         viewModelScope.launch { repository.setHomeSort(sort) }
     }
 
-    fun setCustomHomeQuery(query: String) {
-        customHomeQueryLoaded = true
-        _customHomeQuery.value = query
-        customHomeQueryWriteJob?.cancel()
-        customHomeQueryWriteJob = viewModelScope.launch {
-            repository.setCustomHomeQuery(query)
-        }
-    }
-
-    fun setImageQuality(value: ImageQualityPreference) = launch { repository.setImageQuality(value) }
+    fun setMeteredImageQuality(value: ImageQualityPreference) = launch { repository.setMeteredImageQuality(value) }
+    fun setWifiImageQuality(value: ImageQualityPreference) = launch { repository.setWifiImageQuality(value) }
     fun setVideoAutoPlay(value: Boolean) = launch { repository.setVideoAutoPlay(value) }
     fun setVideoMuted(value: Boolean) = launch { repository.setVideoMuted(value) }
     fun setTagsCollapsed(value: Boolean) = launch { repository.setTagsCollapsed(value) }
     fun setDownloadDirectory(value: String) = launch { repository.setDownloadDirectory(value) }
+    fun setPrefetchOnMetered(value: Boolean) = launch { repository.setPrefetchOnMetered(value) }
+    fun setVideoLoop(value: Boolean) = launch { repository.setVideoLoop(value) }
 
     private fun launch(block: suspend () -> Unit) {
         viewModelScope.launch { block() }

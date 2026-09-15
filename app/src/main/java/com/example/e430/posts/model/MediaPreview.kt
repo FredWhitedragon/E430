@@ -15,6 +15,7 @@ data class MediaPreview(
     val favoriteCount: Int,
     val commentCount: Int,
     val rating: Rating,
+    val fileExtension: String,
 )
 
 enum class PostFeed {

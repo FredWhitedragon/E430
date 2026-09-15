@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,6 +34,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -41,6 +45,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -79,28 +84,43 @@ import com.example.e430.posts.detail.model.MediaQuality
 import com.example.e430.posts.detail.model.MediaSource
 import com.example.e430.posts.detail.model.PostComment
 import com.example.e430.posts.detail.model.PostDetail
+import com.example.e430.posts.detail.model.PoolNavigationInfo
 import com.example.e430.posts.model.Rating
+import com.example.e430.posts.model.MediaPreview
+import com.example.e430.posts.ui.MediaPreviewCard
 import com.example.e430.settings.model.ImageQualityPreference
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import okhttp3.Headers.Companion.headersOf
 import java.net.URI
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 @Composable
 fun PostDetailRoute(
     site: E621Site,
     postId: Long,
     account: Account?,
-    imageQualityPreference: ImageQualityPreference,
+    meteredImageQualityPreference: ImageQualityPreference,
+    wifiImageQualityPreference: ImageQualityPreference,
     videoAutoPlay: Boolean,
     videoMuted: Boolean,
+    videoLoop: Boolean,
+    prefetchPostIds: List<Long>,
+    prefetchEnabled: Boolean,
     tagsCollapsedByDefault: Boolean,
     downloadDirectory: String,
     viewModel: PostDetailViewModel,
     onTagClick: (String) -> Unit,
+    poolLinks: List<PoolNavigationInfo>,
+    onPoolClick: (PoolNavigationInfo) -> Unit,
+    onPoolPostClick: (PoolNavigationInfo, Int, Int) -> Unit,
+    onRelatedPostClick: (Long) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onRequireLogin: () -> Unit,
@@ -110,12 +130,30 @@ fun PostDetailRoute(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(site, postId) { viewModel.show(site, postId) }
+    val context = LocalContext.current
+    val isMetered = context.getSystemService(ConnectivityManager::class.java).isActiveNetworkMetered
+    val activePreference = if (isMetered) meteredImageQualityPreference else wifiImageQualityPreference
+    val prefetchQuality = when (activePreference) {
+        ImageQualityPreference.Low -> MediaQuality.Low
+        ImageQualityPreference.Medium -> MediaQuality.Medium
+        ImageQualityPreference.Original -> MediaQuality.Original
+    }
+    LaunchedEffect(state.post?.id, prefetchPostIds, prefetchEnabled, prefetchQuality) {
+        if (state.post?.id == postId && prefetchEnabled) {
+            viewModel.prefetch(site, prefetchPostIds, prefetchQuality, preloadImages = true)
+        }
+    }
+    val displayedState = when {
+        state.post?.id == postId -> state
+        else -> viewModel.cachedState(site, postId) ?: PostDetailUiState()
+    }
     PostDetailScreen(
-        state = state,
+        state = displayedState,
         account = account,
-        imageQualityPreference = imageQualityPreference,
+        imageQualityPreference = activePreference,
         videoAutoPlay = videoAutoPlay,
         videoMuted = videoMuted,
+        videoLoop = videoLoop,
         tagsCollapsedByDefault = tagsCollapsedByDefault,
         downloadDirectory = downloadDirectory,
         onVote = { if (account == null) onRequireLogin() else viewModel.vote(it) },
@@ -124,6 +162,10 @@ fun PostDetailRoute(
         onUpdateComment = viewModel::updateComment,
         onHideComment = viewModel::hideComment,
         onTagClick = onTagClick,
+        poolLinks = poolLinks,
+        onPoolClick = onPoolClick,
+        onPoolPostClick = onPoolPostClick,
+        onRelatedPostClick = onRelatedPostClick,
         onPrevious = onPrevious,
         onNext = onNext,
         onRequireLogin = onRequireLogin,
@@ -141,6 +183,7 @@ private fun PostDetailScreen(
     imageQualityPreference: ImageQualityPreference,
     videoAutoPlay: Boolean,
     videoMuted: Boolean,
+    videoLoop: Boolean,
     tagsCollapsedByDefault: Boolean,
     downloadDirectory: String,
     onVote: (Int) -> Unit,
@@ -149,6 +192,10 @@ private fun PostDetailScreen(
     onUpdateComment: (Long, String) -> Unit,
     onHideComment: (Long) -> Unit,
     onTagClick: (String) -> Unit,
+    poolLinks: List<PoolNavigationInfo>,
+    onPoolClick: (PoolNavigationInfo) -> Unit,
+    onPoolPostClick: (PoolNavigationInfo, Int, Int) -> Unit,
+    onRelatedPostClick: (Long) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onRequireLogin: () -> Unit,
@@ -171,14 +218,7 @@ private fun PostDetailScreen(
         }
         else -> {
             val post = state.post
-            val context = LocalContext.current
-            val automaticQuality = if (context.getSystemService(ConnectivityManager::class.java).isActiveNetworkMetered) {
-                MediaQuality.Low
-            } else {
-                MediaQuality.Medium
-            }
             val preferredQuality = when (imageQualityPreference) {
-                ImageQualityPreference.Auto -> automaticQuality
                 ImageQualityPreference.Low -> MediaQuality.Low
                 ImageQualityPreference.Medium -> MediaQuality.Medium
                 ImageQualityPreference.Original -> MediaQuality.Original
@@ -203,7 +243,13 @@ private fun PostDetailScreen(
                     }
                     .verticalScroll(rememberScrollState()),
             ) {
-                MediaSection(post, displayedSource, videoAutoPlay, videoMuted)
+                PoolNavigationSection(
+                    postId = post.id,
+                    pools = poolLinks,
+                    onPoolClick = onPoolClick,
+                    onPostClick = onPoolPostClick,
+                )
+                MediaSection(post, displayedSource, videoAutoPlay, videoMuted, videoLoop)
                 MediaControlRow(
                     post = post,
                     displayedSource = displayedSource,
@@ -222,10 +268,16 @@ private fun PostDetailScreen(
                         )
                     }
                 }
-                BasicInfo(post)
+                BasicInfo(
+                    post = post,
+                    relatedPreviews = state.relatedPreviews,
+                    relatedPreviewsLoaded = state.relatedPreviewsLoaded,
+                    onRelatedPostClick = onRelatedPostClick,
+                )
                 TagsSection(post, tagsCollapsedByDefault, onTagClick)
                 CommentsSection(
                     comments = state.comments,
+                    isLoading = state.isCommentsLoading,
                     account = account,
                     isActing = state.isActing,
                     onRequireLogin = onRequireLogin,
@@ -308,7 +360,7 @@ private fun LoadingBlock(
 }
 
 @Composable
-private fun MediaSection(post: PostDetail, source: MediaSource?, autoPlay: Boolean, muted: Boolean) {
+private fun MediaSection(post: PostDetail, source: MediaSource?, autoPlay: Boolean, muted: Boolean, loop: Boolean) {
     if (source == null) {
         Text(
             stringResource(R.string.media_unavailable),
@@ -318,7 +370,7 @@ private fun MediaSection(post: PostDetail, source: MediaSource?, autoPlay: Boole
         return
     }
     if (post.kind == MediaKind.Video) {
-        VideoPlayer(source.url, autoPlay, muted, post.width, post.height)
+        VideoPlayer(source.url, autoPlay, muted, loop, post.width, post.height)
     } else {
         ZoomableImage(source.url, post.width, post.height)
     }
@@ -371,19 +423,78 @@ private fun FullScreenImage(model: ImageRequest, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun VideoPlayer(url: String, autoPlay: Boolean, muted: Boolean, width: Int, height: Int) {
+private fun VideoPlayer(url: String, autoPlay: Boolean, muted: Boolean, loop: Boolean, width: Int, height: Int) {
     val context = LocalContext.current
     var fullScreen by rememberSaveable(url) { mutableStateOf(false) }
+    var isMuted by rememberSaveable(url) { mutableStateOf(muted) }
+    var isLooping by rememberSaveable(url) { mutableStateOf(loop) }
+    var playbackSpeed by rememberSaveable(url) { mutableFloatStateOf(1f) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var position by remember { mutableLongStateOf(0L) }
+    var duration by remember { mutableLongStateOf(0L) }
     val player = remember(url) {
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(context).setDataSourceFactory(DefaultHttpDataSource.Factory().setUserAgent(E430_USER_AGENT)))
             .build()
             .apply { setMediaItem(MediaItem.fromUri(url)); prepare() }
     }
-    LaunchedEffect(autoPlay, muted) { player.playWhenReady = autoPlay; player.volume = if (muted) 0f else 1f }
-    DisposableEffect(player) { onDispose { player.release() } }
+    LaunchedEffect(autoPlay, url) { player.playWhenReady = autoPlay }
+    LaunchedEffect(muted, url) { isMuted = muted }
+    LaunchedEffect(loop, url) { isLooping = loop }
+    LaunchedEffect(isMuted) { player.volume = if (isMuted) 0f else 1f }
+    LaunchedEffect(isLooping) {
+        player.repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+    }
+    LaunchedEffect(playbackSpeed) { player.setPlaybackSpeed(playbackSpeed) }
+    LaunchedEffect(player) {
+        while (currentCoroutineContext().isActive) {
+            position = player.currentPosition.coerceAtLeast(0L)
+            duration = player.duration.takeIf { it > 0L } ?: 0L
+            delay(400)
+        }
+    }
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(value: Boolean) {
+                isPlaying = value
+            }
+        }
+        player.addListener(listener)
+        onDispose {
+            player.removeListener(listener)
+            player.release()
+        }
+    }
+    val controls: @Composable (Boolean, () -> Unit) -> Unit = { isFullScreen, onFullScreen ->
+        VideoControls(
+            isPlaying = isPlaying,
+            isMuted = isMuted,
+            isLooping = isLooping,
+            playbackSpeed = playbackSpeed,
+            position = position,
+            duration = duration,
+            isFullScreen = isFullScreen,
+            onPlayPause = {
+                if (player.isPlaying) {
+                    player.pause()
+                } else {
+                    if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
+                    player.play()
+                }
+            },
+            onSeek = player::seekTo,
+            onMutedChange = { isMuted = it },
+            onLoopingChange = { isLooping = it },
+            onSpeedChange = { playbackSpeed = it },
+            onFullScreen = onFullScreen,
+        )
+    }
     if (fullScreen) {
-        FullScreenVideo(player = player, onDismiss = { fullScreen = false })
+        FullScreenVideo(
+            player = player,
+            controls = { controls(true) { fullScreen = false } },
+            onDismiss = { fullScreen = false },
+        )
         Box(
             Modifier
                 .fillMaxWidth()
@@ -393,7 +504,7 @@ private fun VideoPlayer(url: String, autoPlay: Boolean, muted: Boolean, width: I
     } else {
         VideoPlayerSurface(
             player = player,
-            onFullScreen = { fullScreen = true },
+            controls = { controls(false) { fullScreen = true } },
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio((width.toFloat() / height.coerceAtLeast(1)).coerceIn(0.4f, 2.5f)),
@@ -404,32 +515,25 @@ private fun VideoPlayer(url: String, autoPlay: Boolean, muted: Boolean, width: I
 @Composable
 private fun VideoPlayerSurface(
     player: ExoPlayer,
-    onFullScreen: () -> Unit,
+    controls: @Composable () -> Unit,
     modifier: Modifier,
 ) {
     Box(modifier.background(Color.Black)) {
         AndroidView(
-            factory = { PlayerView(it).apply { this.player = player; useController = true } },
+            factory = { PlayerView(it).apply { this.player = player; useController = false } },
             update = { it.player = player },
             modifier = Modifier.fillMaxSize(),
         )
-        IconButton(
-            onClick = onFullScreen,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(bottomStart = 12.dp)),
-        ) {
-            Icon(
-                painterResource(R.drawable.ic_fullscreen),
-                stringResource(R.string.enter_fullscreen),
-                tint = Color.White,
-            )
-        }
+        Box(Modifier.align(Alignment.BottomCenter)) { controls() }
     }
 }
 
 @Composable
-private fun FullScreenVideo(player: ExoPlayer, onDismiss: () -> Unit) {
+private fun FullScreenVideo(
+    player: ExoPlayer,
+    controls: @Composable () -> Unit,
+    onDismiss: () -> Unit,
+) {
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -443,26 +547,100 @@ private fun FullScreenVideo(player: ExoPlayer, onDismiss: () -> Unit) {
         }
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             AndroidView(
-                factory = { PlayerView(it).apply { this.player = player; useController = true } },
+                factory = { PlayerView(it).apply { this.player = player; useController = false } },
                 update = { it.player = player },
                 modifier = Modifier.fillMaxSize(),
             )
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp)
-                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(12.dp)),
-            ) {
+            Box(Modifier.align(Alignment.BottomCenter)) { controls() }
+        }
+    }
+}
+
+@Composable
+private fun VideoControls(
+    isPlaying: Boolean,
+    isMuted: Boolean,
+    isLooping: Boolean,
+    playbackSpeed: Float,
+    position: Long,
+    duration: Long,
+    isFullScreen: Boolean,
+    onPlayPause: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onMutedChange: (Boolean) -> Unit,
+    onLoopingChange: (Boolean) -> Unit,
+    onSpeedChange: (Float) -> Unit,
+    onFullScreen: () -> Unit,
+) {
+    var speedMenuVisible by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.72f)),
+    ) {
+        Slider(
+            value = position.coerceAtMost(duration.coerceAtLeast(1L)).toFloat(),
+            onValueChange = { onSeek(it.toLong()) },
+            valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(24.dp)
+                .padding(horizontal = 8.dp),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            IconButton(onClick = onPlayPause) {
                 Icon(
-                    painterResource(R.drawable.ic_fullscreen_exit),
-                    stringResource(R.string.exit_fullscreen),
+                    painterResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
+                    stringResource(if (isPlaying) R.string.pause else R.string.play),
+                    tint = Color.White,
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Box {
+                TextButton(onClick = { speedMenuVisible = true }) {
+                    Text(stringResource(R.string.playback_speed_value, playbackSpeed), color = Color.White)
+                }
+                DropdownMenu(
+                    expanded = speedMenuVisible,
+                    onDismissRequest = { speedMenuVisible = false },
+                ) {
+                    PLAYBACK_SPEEDS.forEach { speed ->
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.playback_speed_value, speed)) },
+                            onClick = {
+                                speedMenuVisible = false
+                                onSpeedChange(speed)
+                            },
+                        )
+                    }
+                }
+            }
+            IconButton(onClick = { onLoopingChange(!isLooping) }) {
+                Icon(
+                    painterResource(R.drawable.ic_repeat),
+                    stringResource(if (isLooping) R.string.disable_loop else R.string.enable_loop),
+                    tint = if (isLooping) Color(0xFFFCBF31) else Color.White,
+                )
+            }
+            IconButton(onClick = { onMutedChange(!isMuted) }) {
+                Icon(
+                    painterResource(if (isMuted) R.drawable.ic_volume_off else R.drawable.ic_volume_on),
+                    stringResource(if (isMuted) R.string.unmute else R.string.mute),
+                    tint = if (isMuted) Color(0xFFFCBF31) else Color.White,
+                )
+            }
+            IconButton(onClick = onFullScreen) {
+                Icon(
+                    painterResource(if (isFullScreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen),
+                    stringResource(if (isFullScreen) R.string.exit_fullscreen else R.string.enter_fullscreen),
                     tint = Color.White,
                 )
             }
         }
     }
 }
+
+private val PLAYBACK_SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
 
 @Composable
 private fun MediaControlRow(
@@ -530,8 +708,78 @@ private fun InteractionSection(post: PostDetail, onVote: (Int) -> Unit, onFavori
     Text(stringResource(text), color = color, modifier = Modifier.padding(start = 8.dp))
 }
 
-@Composable private fun BasicInfo(post: PostDetail) {
+@Composable
+private fun PoolNavigationSection(
+    postId: Long,
+    pools: List<PoolNavigationInfo>,
+    onPoolClick: (PoolNavigationInfo) -> Unit,
+    onPostClick: (PoolNavigationInfo, Int, Int) -> Unit,
+) {
+    pools.forEach { pool ->
+        val index = pool.postIds.indexOf(postId)
+        if (index < 0) return@forEach
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+        ) {
+            TextButton(onClick = { onPoolClick(pool) }) {
+                Text(pool.name, color = MaterialTheme.colorScheme.primary)
+            }
+            Row(
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                TextButton(
+                    enabled = index > 0,
+                    onClick = { onPostClick(pool, 0, -1) },
+                ) { Text(stringResource(R.string.pool_first)) }
+                TextButton(
+                    enabled = index > 0,
+                    onClick = { onPostClick(pool, index - 1, -1) },
+                ) { Text(stringResource(R.string.pool_previous)) }
+                TextButton(
+                    enabled = index < pool.postIds.lastIndex,
+                    onClick = { onPostClick(pool, index + 1, 1) },
+                ) { Text(stringResource(R.string.pool_next)) }
+                TextButton(
+                    enabled = index < pool.postIds.lastIndex,
+                    onClick = { onPostClick(pool, pool.postIds.lastIndex, 1) },
+                ) { Text(stringResource(R.string.pool_last)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BasicInfo(
+    post: PostDetail,
+    relatedPreviews: Map<Long, MediaPreview>,
+    relatedPreviewsLoaded: Boolean,
+    onRelatedPostClick: (Long) -> Unit,
+) {
     SectionTitle(R.string.basic_information)
+    post.parentId?.let { parentId ->
+        RelatedPreviewGroup(
+            title = stringResource(R.string.parent_post),
+            ids = listOf(parentId),
+            previews = relatedPreviews,
+            loaded = relatedPreviewsLoaded,
+            onPostClick = onRelatedPostClick,
+        )
+    }
+    if (post.childIds.isNotEmpty()) {
+        RelatedPreviewGroup(
+            title = stringResource(R.string.child_posts),
+            ids = post.childIds,
+            previews = relatedPreviews,
+            loaded = relatedPreviewsLoaded,
+            onPostClick = onRelatedPostClick,
+        )
+    }
     InfoRow(R.string.format, post.extension.uppercase())
     InfoRow(R.string.dimensions, stringResource(R.string.dimensions_value, post.width, post.height))
     InfoRow(R.string.file_size, formatBytes(post.fileSize))
@@ -542,12 +790,48 @@ private fun InteractionSection(post: PostDetail, onVote: (Int) -> Unit, onFavori
     InfoRow(R.string.uploader, stringResource(R.string.user_with_id, post.uploaderName, post.uploaderId))
     InfoRow(R.string.uploaded_at, post.createdAt)
     if (post.sources.isNotEmpty()) SourceLinks(post.sources)
-    if (post.pools.isNotEmpty()) InfoRow(R.string.pool_ids, post.pools.joinToString())
-    post.parentId?.let { InfoRow(R.string.parent_post, it.toString()) }
-    if (post.childIds.isNotEmpty()) InfoRow(R.string.child_posts, post.childIds.joinToString())
     InfoRow(R.string.has_notes, stringResource(if (post.hasNotes) R.string.yes else R.string.no))
     if (post.statusFlags.isNotEmpty()) InfoRow(R.string.status_flags, statusFlagsText(post.statusFlags))
     if (post.description.isNotBlank()) InfoRow(R.string.description, post.description)
+}
+
+@Composable
+private fun RelatedPreviewGroup(
+    title: String,
+    ids: List<Long>,
+    previews: Map<Long, MediaPreview>,
+    loaded: Boolean,
+    onPostClick: (Long) -> Unit,
+) {
+    val visibleIds = if (loaded) ids.filter(previews::containsKey) else ids
+    if (visibleIds.isEmpty()) return
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Text(
+            text = title,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
+            visibleIds.forEach { id ->
+                val preview = previews[id]
+                if (preview == null) {
+                    LoadingBlock(width = 160.dp, height = 210.dp)
+                } else {
+                    MediaPreviewCard(
+                        item = preview,
+                        onClick = { onPostClick(id) },
+                        modifier = Modifier.width(160.dp),
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -678,13 +962,15 @@ private fun TagWrapLayout(modifier: Modifier = Modifier, content: @Composable ()
     }
 }
 
-@Composable private fun CommentsSection(comments: List<PostComment>, account: Account?, isActing: Boolean, onRequireLogin: () -> Unit, onCreate: (String) -> Unit, onUpdate: (Long, String) -> Unit, onHide: (Long) -> Unit) {
+@Composable private fun CommentsSection(comments: List<PostComment>, isLoading: Boolean, account: Account?, isActing: Boolean, onRequireLogin: () -> Unit, onCreate: (String) -> Unit, onUpdate: (Long, String) -> Unit, onHide: (Long) -> Unit) {
     var body by rememberSaveable { mutableStateOf("") }
     var editing by remember { mutableStateOf<PostComment?>(null) }
     SectionTitle(R.string.comments)
     OutlinedTextField(value = body, onValueChange = { body = it }, label = { Text(stringResource(R.string.comment_hint)) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
     Button(onClick = { if (account == null) onRequireLogin() else { onCreate(body); body = "" } }, enabled = !isActing && body.isNotBlank(), modifier = Modifier.padding(16.dp)) { Text(stringResource(R.string.post_comment)) }
-    if (comments.isEmpty()) {
+    if (isLoading) {
+        CircularProgressIndicator(modifier = Modifier.padding(16.dp).size(24.dp), strokeWidth = 2.dp)
+    } else if (comments.isEmpty()) {
         Text(
             stringResource(R.string.no_comments),
             color = MaterialTheme.colorScheme.onSurfaceVariant,

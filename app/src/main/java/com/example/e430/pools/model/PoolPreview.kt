@@ -8,3 +8,10 @@ data class PoolPreview(
     val coverWidth: Int,
     val coverHeight: Int,
 )
+
+data class PoolDetail(
+    val id: Long,
+    val name: String,
+    val description: String,
+    val postIds: List<Long>,
+)

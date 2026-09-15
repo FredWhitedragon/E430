@@ -4,6 +4,7 @@ import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -44,17 +46,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.imageLoader
+import coil.request.ImageRequest
 import com.example.e430.R
+import com.example.e430.core.network.E430_USER_AGENT
 import com.example.e430.core.ui.RemotePreviewImage
 import com.example.e430.posts.model.MediaPreview
 import com.example.e430.posts.model.Rating
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import okhttp3.Headers.Companion.headersOf
 
 @Composable
 fun PostGridRoute(
@@ -64,6 +76,8 @@ fun PostGridRoute(
     onPostClick: (Long) -> Unit = {},
     focusPostId: Long? = null,
     onFocusConsumed: () -> Unit = {},
+    scrollToTopKey: Int = 0,
+    prefetchEnabled: Boolean = false,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(request) { viewModel.show(request) }
@@ -75,6 +89,8 @@ fun PostGridRoute(
         onPostClick = onPostClick,
         focusPostId = focusPostId,
         onFocusConsumed = onFocusConsumed,
+        scrollToTopKey = scrollToTopKey,
+        prefetchEnabled = prefetchEnabled,
         modifier = modifier,
     )
 }
@@ -89,15 +105,41 @@ private fun PostGridScreen(
     onPostClick: (Long) -> Unit,
     focusPostId: Long?,
     onFocusConsumed: () -> Unit,
+    scrollToTopKey: Int,
+    prefetchEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val gridState = rememberLazyStaggeredGridState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val focusManager = LocalFocusManager.current
+    var handledScrollToTopKey by remember { mutableIntStateOf(scrollToTopKey) }
+    LaunchedEffect(scrollToTopKey) {
+        if (scrollToTopKey != handledScrollToTopKey) {
+            gridState.scrollToItem(0)
+            handledScrollToTopKey = scrollToTopKey
+        }
+    }
     LaunchedEffect(focusPostId, uiState.items) {
         val index = uiState.items.indexOfFirst { it.id == focusPostId }
         if (index >= 0) {
             gridState.scrollToItem(index)
+            androidx.compose.runtime.withFrameNanos { }
+            val itemInfo = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == focusPostId }
+            if (itemInfo != null) {
+                val viewportCenter = (
+                    gridState.layoutInfo.viewportStartOffset + gridState.layoutInfo.viewportEndOffset
+                ) / 2f
+                val itemCenter = itemInfo.offset.y + itemInfo.size.height / 2f
+                gridState.scrollBy(itemCenter - viewportCenter)
+            }
             onFocusConsumed()
         }
+    }
+    LaunchedEffect(gridState) {
+        snapshotFlow { gridState.isScrollInProgress }
+            .distinctUntilChanged()
+            .filter { it }
+            .collect { focusManager.clearFocus() }
     }
     LaunchedEffect(gridState, uiState.items.size) {
         snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
@@ -105,6 +147,30 @@ private fun PostGridScreen(
             .collect { lastVisibleIndex ->
                 if (uiState.items.isNotEmpty() && lastVisibleIndex >= uiState.items.lastIndex - 6) {
                     onLoadMore()
+                }
+            }
+    }
+    LaunchedEffect(gridState, uiState.items, prefetchEnabled) {
+        if (!prefetchEnabled) return@LaunchedEffect
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+            .distinctUntilChanged()
+            .collectLatest { lastVisibleIndex ->
+                val urls = uiState.items
+                    .drop(lastVisibleIndex + 1)
+                    .take(PREVIEW_PREFETCH_COUNT)
+                    .mapNotNull(MediaPreview::previewUrl)
+                coroutineScope {
+                    urls.map { url ->
+                        async {
+                            context.imageLoader.execute(
+                                ImageRequest.Builder(context)
+                                    .data(url)
+                                    .size(400)
+                                    .headers(headersOf("User-Agent", E430_USER_AGENT))
+                                    .build(),
+                            )
+                        }
+                    }.awaitAll()
                 }
             }
     }
@@ -154,7 +220,11 @@ private fun PostGridScreen(
 }
 
 @Composable
-private fun MediaPreviewCard(item: MediaPreview, onClick: () -> Unit) {
+fun MediaPreviewCard(
+    item: MediaPreview,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     var loadFailed by remember(item.previewUrl) { mutableStateOf(false) }
     if (loadFailed || item.previewUrl == null) return
     val aspectRatio = (item.width.toFloat() / item.height).coerceIn(0.7f, 1.6f)
@@ -162,16 +232,32 @@ private fun MediaPreviewCard(item: MediaPreview, onClick: () -> Unit) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         shape = RoundedCornerShape(0.dp),
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = modifier.clickable(onClick = onClick),
     ) {
-        RemotePreviewImage(
-            url = item.previewUrl,
-            contentDescription = stringResource(R.string.post_preview),
-            onLoadFailed = { loadFailed = true },
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(aspectRatio),
-        )
+        Box {
+            RemotePreviewImage(
+                url = item.previewUrl,
+                contentDescription = stringResource(R.string.post_preview),
+                onLoadFailed = { loadFailed = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(aspectRatio),
+            )
+            if (item.fileExtension.isNotBlank() && item.fileExtension.lowercase() !in STATIC_IMAGE_FORMATS) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.72f),
+                    shape = RoundedCornerShape(bottomStart = 6.dp),
+                    modifier = Modifier.align(Alignment.TopEnd),
+                ) {
+                    Text(
+                        text = item.fileExtension.uppercase(),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                    )
+                }
+            }
+        }
         Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -201,6 +287,9 @@ private fun MediaPreviewCard(item: MediaPreview, onClick: () -> Unit) {
         }
     }
 }
+
+private val STATIC_IMAGE_FORMATS = setOf("jpg", "jpeg", "png", "webp", "avif")
+private const val PREVIEW_PREFETCH_COUNT = 10
 
 @Composable
 private fun Stat(

@@ -4,6 +4,7 @@ import android.content.Intent
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
@@ -26,6 +27,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -43,16 +46,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -72,9 +83,14 @@ import com.example.e430.core.network.E621Site
 import com.example.e430.core.ui.theme.E430Blue
 import com.example.e430.core.ui.theme.E430Gold
 import com.example.e430.core.ui.theme.E430Theme
+import com.example.e430.core.ui.rememberIsActiveNetworkMetered
 import com.example.e430.pools.ui.PoolGridRequest
 import com.example.e430.pools.ui.PoolGridRoute
 import com.example.e430.pools.ui.PoolGridViewModel
+import com.example.e430.pools.ui.PoolDetailRoute
+import com.example.e430.pools.ui.PoolDetailViewModel
+import com.example.e430.presets.ui.PresetScreen
+import com.example.e430.presets.ui.PresetViewModel
 import com.example.e430.posts.model.HomeSort
 import com.example.e430.posts.model.PostFeed
 import com.example.e430.posts.ui.PostGridRequest
@@ -82,6 +98,7 @@ import com.example.e430.posts.ui.PostGridRoute
 import com.example.e430.posts.ui.PostGridViewModel
 import com.example.e430.posts.detail.model.MediaSource
 import com.example.e430.posts.detail.model.PostDetail
+import com.example.e430.posts.detail.model.PoolNavigationInfo
 import com.example.e430.posts.detail.ui.PostDetailRoute
 import com.example.e430.posts.detail.ui.PostDetailViewModel
 import com.example.e430.search.ui.SearchHeader
@@ -99,6 +116,9 @@ private enum class Destination(
     Favorites(R.string.favorites, R.drawable.ic_favorite),
     Pools(R.string.pools, R.drawable.ic_pools),
 }
+
+private const val MONTHLY_POPULAR_HOME_QUERY = "date:1_month_ago.. order:score"
+private const val MAX_NAVIGATION_LEVEL = 6
 
 @Composable
 fun E430App() {
@@ -134,13 +154,19 @@ private fun E430Home(
         factory = PostGridViewModel.factory(container.postRepository),
     )
     val postDetailViewModel: PostDetailViewModel = viewModel(
-        factory = PostDetailViewModel.factory(container.postDetailRepository),
+        factory = PostDetailViewModel.factory(container.postDetailRepository, container.postRepository),
     )
+    val postDetailState by postDetailViewModel.uiState.collectAsStateWithLifecycle()
     val mainPostState by postViewModel.uiState.collectAsStateWithLifecycle()
     val tagPostState by tagPostViewModel.uiState.collectAsStateWithLifecycle()
     val poolViewModel: PoolGridViewModel = viewModel(
         factory = PoolGridViewModel.factory(container.poolRepository),
     )
+    val poolDetailViewModel: PoolDetailViewModel = viewModel(
+        factory = PoolDetailViewModel.factory(container.poolRepository, container.postDetailRepository),
+    )
+    val poolDetailState by poolDetailViewModel.uiState.collectAsStateWithLifecycle()
+    val membershipPools by poolDetailViewModel.membershipPools.collectAsStateWithLifecycle()
     val settingsViewModel: SettingsViewModel = viewModel(
         factory = SettingsViewModel.factory(container.settingsRepository),
     )
@@ -148,29 +174,50 @@ private fun E430Home(
         factory = AccountViewModel.factory(container.accountRepository),
     )
     val accountState by accountViewModel.uiState.collectAsStateWithLifecycle()
+    val presetViewModel: PresetViewModel = viewModel(
+        factory = PresetViewModel.factory(container.presetRepository),
+    )
+    val presetState by presetViewModel.uiState.collectAsStateWithLifecycle()
     val homeSort by settingsViewModel.homeSort.collectAsStateWithLifecycle()
-    val customHomeQuery by settingsViewModel.customHomeQuery.collectAsStateWithLifecycle()
-    val imageQuality by settingsViewModel.imageQuality.collectAsStateWithLifecycle()
+    val meteredImageQuality by settingsViewModel.meteredImageQuality.collectAsStateWithLifecycle()
+    val wifiImageQuality by settingsViewModel.wifiImageQuality.collectAsStateWithLifecycle()
     val videoAutoPlay by settingsViewModel.videoAutoPlay.collectAsStateWithLifecycle()
     val videoMuted by settingsViewModel.videoMuted.collectAsStateWithLifecycle()
     val tagsCollapsed by settingsViewModel.tagsCollapsed.collectAsStateWithLifecycle()
     val downloadDirectory by settingsViewModel.downloadDirectory.collectAsStateWithLifecycle()
+    val prefetchOnMetered by settingsViewModel.prefetchOnMetered.collectAsStateWithLifecycle()
+    val videoLoop by settingsViewModel.videoLoop.collectAsStateWithLifecycle()
+    val isNetworkMetered by rememberIsActiveNetworkMetered()
+    val prefetchEnabled = !isNetworkMetered || prefetchOnMetered
     var selectedDestinationName by rememberSaveable { mutableStateOf(Destination.Home.name) }
     var settingsVisible by rememberSaveable { mutableStateOf(false) }
+    var presetsVisible by rememberSaveable { mutableStateOf(false) }
+    var presetsReturnToSettings by rememberSaveable { mutableStateOf(false) }
+    var openDrawerOnMain by rememberSaveable { mutableStateOf(false) }
     var accountVisible by rememberSaveable { mutableStateOf(false) }
     var loginDialogVisible by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     var submittedQuery by rememberSaveable { mutableStateOf("") }
     var filtersVisible by rememberSaveable { mutableStateOf(false) }
+    var searchRevision by rememberSaveable { mutableIntStateOf(0) }
+    var initializedPresetOwner by rememberSaveable { mutableStateOf<String?>(null) }
+    var useExactHomeQuery by rememberSaveable { mutableStateOf(false) }
     var useE926 by rememberSaveable { mutableStateOf(false) }
     var originalDetailId by rememberSaveable { mutableStateOf<Long?>(null) }
     var currentDetailId by rememberSaveable { mutableStateOf<Long?>(null) }
     var activeTag by rememberSaveable { mutableStateOf<String?>(null) }
+    var tagReturnSecondPostId by rememberSaveable { mutableStateOf<Long?>(null) }
     var detailSequence by rememberSaveable { mutableStateOf(longArrayOf()) }
     var detailSiteName by rememberSaveable { mutableStateOf(E621Site.E621.name) }
     var returnFocusPostId by rememberSaveable { mutableStateOf<Long?>(null) }
-    var detailSlideDirection by rememberSaveable { mutableStateOf(0) }
+    var detailSlideDirection by rememberSaveable { mutableIntStateOf(0) }
+    var activePoolId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var activePoolTitle by rememberSaveable { mutableStateOf("") }
+    var poolReturnPostId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var postBackStack by rememberSaveable { mutableStateOf(longArrayOf()) }
+    var initialSecondLevelPostId by rememberSaveable { mutableStateOf<Long?>(null) }
     var pendingDownload by remember { mutableStateOf<Pair<PostDetail, MediaSource>?>(null) }
+    val settingsScrollState = rememberScrollState()
     val destination = Destination.entries.firstOrNull {
         it.name == selectedDestinationName
     } ?: Destination.Home
@@ -178,12 +225,8 @@ private fun E430Home(
     val shareTitle = stringResource(R.string.share)
     val safeDownloadDirectory = container.mediaFileRepository.sanitizeFolder(downloadDirectory)
     val activeBlacklist = accountState.account?.blacklistedTags.orEmpty()
-    val homeQuery = if (destination == Destination.Home && homeSort == HomeSort.Custom) {
-        listOf(customHomeQuery.trim(), submittedQuery.trim())
-            .filter(String::isNotEmpty)
-            .joinToString(" ")
-    } else {
-        submittedQuery
+    val selectedHomePreset = presetState.presets.firstOrNull {
+        it.id == presetState.selectedHomePresetId
     }
     fun startDownload(post: PostDetail, source: MediaSource) {
         val success = container.mediaFileRepository.enqueueDownload(
@@ -207,11 +250,69 @@ private fun E430Home(
         }
         pendingDownload = null
     }
+    val presetStorageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri -> presetViewModel.grantStorageAccess(uri) }
+    val documentsUri = remember {
+        DocumentsContract.buildDocumentUri(
+            "com.android.externalstorage.documents",
+            "primary:Documents",
+        )
+    }
+
+    fun applySearch(searchQuery: String) {
+        postViewModel.clear()
+        tagPostViewModel.clear()
+        postDetailViewModel.clearCache()
+        container.imageLoader.memoryCache?.clear()
+        query = searchQuery
+        submittedQuery = searchQuery.trim()
+        useExactHomeQuery = true
+        selectedDestinationName = Destination.Home.name
+        searchRevision += 1
+        filtersVisible = false
+    }
 
     LaunchedEffect(accountState.account) {
+        postDetailViewModel.clearCache()
         accountState.account?.let { account ->
             loginDialogVisible = false
             useE926 = account.site == E621Site.E926
+        }
+    }
+    LaunchedEffect(accountState.isRestoring, accountState.account?.username) {
+        if (!accountState.isRestoring) {
+            presetViewModel.setOwner(accountState.account?.username ?: "anonymous")
+        }
+    }
+    LaunchedEffect(presetState.storageAccessRequired, accountState.isRestoring) {
+        if (presetState.storageAccessRequired && !accountState.isRestoring) {
+            presetStorageLauncher.launch(documentsUri)
+        }
+    }
+    LaunchedEffect(
+        accountState.isRestoring,
+        presetState.owner,
+        presetState.isLoading,
+        selectedHomePreset?.id,
+        selectedHomePreset?.query,
+        presetState.presets.size,
+    ) {
+        if (!accountState.isRestoring && !presetState.isLoading) {
+            val preset = selectedHomePreset ?: presetState.presets.firstOrNull()
+            if (selectedHomePreset == null && preset != null) {
+                presetViewModel.selectHomePreset(preset.id)
+            }
+            val desiredQuery = preset?.query?.trim().takeUnless { it.isNullOrEmpty() }
+                ?: MONTHLY_POPULAR_HOME_QUERY
+            val ownerChanged = initializedPresetOwner != presetState.owner
+            if (ownerChanged) {
+                initializedPresetOwner = presetState.owner
+                settingsViewModel.setHomeSort(HomeSort.Custom)
+            }
+            if (ownerChanged || query != desiredQuery || submittedQuery != desiredQuery) {
+                applySearch(desiredQuery)
+            }
         }
     }
     LaunchedEffect(accountVisible, accountState.isRestoring, accountState.account) {
@@ -220,24 +321,56 @@ private fun E430Home(
             loginDialogVisible = true
         }
     }
-
-    BackHandler(enabled = settingsVisible || accountVisible) {
-        settingsVisible = false
-        accountVisible = false
+    LaunchedEffect(postDetailState.post?.id, postDetailState.post?.pools, detailSiteName) {
+        val detailPost = postDetailState.post
+        if (detailPost != null && detailPost.id == currentDetailId) {
+            val membershipSite = E621Site.entries.firstOrNull { it.name == detailSiteName } ?: site
+            poolDetailViewModel.loadMembershipPools(membershipSite, detailPost.pools)
+        }
     }
-    BackHandler(enabled = currentDetailId != null || activeTag != null) {
+
+    fun returnFromPost(postId: Long) {
+        val pageLevel = (if (activePoolId != null) 3 else 2) + postBackStack.size
         when {
-            currentDetailId != null && activeTag != null -> currentDetailId = null
-            activeTag != null -> {
-                activeTag = null
-                currentDetailId = originalDetailId
-                detailSequence = longArrayOf(originalDetailId ?: 0L)
+            pageLevel >= MAX_NAVIGATION_LEVEL -> {
+                postBackStack = longArrayOf()
+                if (activePoolId != null) {
+                    currentDetailId = null
+                } else {
+                    currentDetailId = initialSecondLevelPostId
+                }
             }
-            currentDetailId != null -> {
-                returnFocusPostId = currentDetailId
+            postBackStack.isNotEmpty() -> {
+                currentDetailId = postBackStack.last()
+                postBackStack = postBackStack.dropLast(1).toLongArray()
+                detailSlideDirection = -1
+            }
+            activeTag != null -> currentDetailId = null
+            activePoolId != null -> currentDetailId = null
+            else -> {
+                returnFocusPostId = postId
                 currentDetailId = null
                 originalDetailId = null
+                initialSecondLevelPostId = null
             }
+        }
+    }
+
+    BackHandler(enabled = currentDetailId != null || activeTag != null || activePoolId != null) {
+        when {
+            currentDetailId != null -> returnFromPost(requireNotNull(currentDetailId))
+            activeTag != null -> {
+                activeTag = null
+                currentDetailId = if (activePoolId == null) tagReturnSecondPostId else null
+                tagReturnSecondPostId?.let { detailSequence = longArrayOf(it) }
+            }
+            activePoolId != null && poolReturnPostId != null -> {
+                val returnPost = poolReturnPostId
+                activePoolId = null
+                poolReturnPostId = null
+                currentDetailId = returnPost
+            }
+            activePoolId != null -> activePoolId = null
         }
     }
 
@@ -261,127 +394,242 @@ private fun E430Home(
         )
     }
 
+    @Composable
+    fun DrawerSecondaryOverlay() {
     if (accountVisible) {
         val account = accountState.account
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
-        ) {
-            SecondaryHeader(
-                title = stringResource(R.string.account),
-                onBack = { accountVisible = false },
-            )
-            if (account == null) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    androidx.compose.material3.CircularProgressIndicator()
+        SecondaryPage(
+            onExited = {
+                accountVisible = false
+                openDrawerOnMain = true
+            },
+        ) { onBack ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+            ) {
+                SecondaryHeader(title = stringResource(R.string.account), onBack = onBack)
+                if (account == null) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        androidx.compose.material3.CircularProgressIndicator()
+                    }
+                } else {
+                    AccountScreen(
+                        account = account,
+                        isSavingBlacklist = accountState.isSavingBlacklist,
+                        blacklistSaveFailed = accountState.blacklistSaveFailed,
+                        blacklistSaved = accountState.blacklistSaved,
+                        onSaveBlacklist = accountViewModel::updateBlacklist,
+                        onLogout = {
+                            postViewModel.clear()
+                            tagPostViewModel.clear()
+                            postDetailViewModel.clearCache()
+                            accountViewModel.logout()
+                            accountVisible = false
+                            openDrawerOnMain = true
+                            if (destination == Destination.Favorites) {
+                                selectedDestinationName = Destination.Home.name
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
                 }
-            } else {
-                AccountScreen(
-                    account = account,
-                    isSavingBlacklist = accountState.isSavingBlacklist,
-                    blacklistSaveFailed = accountState.blacklistSaveFailed,
-                    blacklistSaved = accountState.blacklistSaved,
-                    onSaveBlacklist = accountViewModel::updateBlacklist,
-                    onLogout = {
-                        postViewModel.clear()
-                        tagPostViewModel.clear()
-                        accountViewModel.logout()
-                        accountVisible = false
-                        if (destination == Destination.Favorites) {
-                            selectedDestinationName = Destination.Home.name
-                        }
-                    },
+            }
+        }
+    }
+
+    if (presetsVisible) {
+        val ownerLabel = accountState.account?.username ?: stringResource(R.string.anonymous)
+        SecondaryPage(
+            onExited = {
+                val returnToSettings = presetsReturnToSettings
+                presetsReturnToSettings = false
+                presetsVisible = false
+                if (returnToSettings) {
+                    settingsVisible = true
+                } else {
+                    openDrawerOnMain = true
+                }
+            },
+        ) { onBack ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+            ) {
+                SecondaryHeader(
+                    title = stringResource(R.string.presets_title, ownerLabel),
+                    onBack = onBack,
+                )
+                PresetScreen(
+                    state = presetState,
+                    onCreate = presetViewModel::create,
+                    onRename = presetViewModel::rename,
+                    onQueryChange = presetViewModel::updateQuery,
+                    onChooseStorage = { presetStorageLauncher.launch(documentsUri) },
+                    onRetry = presetViewModel::retry,
                     modifier = Modifier.weight(1f),
                 )
             }
         }
-        return
     }
 
     if (settingsVisible) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
-        ) {
-            SecondaryHeader(
-                title = stringResource(R.string.more_settings),
-                onBack = { settingsVisible = false },
-            )
-            SettingsScreen(
-                homeSort = homeSort,
-                customHomeQuery = customHomeQuery,
-                imageQuality = imageQuality,
-                videoAutoPlay = videoAutoPlay,
-                videoMuted = videoMuted,
-                tagsCollapsed = tagsCollapsed,
-                downloadDirectory = downloadDirectory,
-                onHomeSortChange = settingsViewModel::setHomeSort,
-                onCustomHomeQueryChange = settingsViewModel::setCustomHomeQuery,
-                onImageQualityChange = settingsViewModel::setImageQuality,
-                onVideoAutoPlayChange = settingsViewModel::setVideoAutoPlay,
-                onVideoMutedChange = settingsViewModel::setVideoMuted,
-                onTagsCollapsedChange = settingsViewModel::setTagsCollapsed,
-                onDownloadDirectoryChange = settingsViewModel::setDownloadDirectory,
-                modifier = Modifier.weight(1f),
-            )
+        SecondaryPage(
+            onExited = {
+                settingsVisible = false
+                openDrawerOnMain = true
+            },
+        ) { onBack ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+            ) {
+                SecondaryHeader(title = stringResource(R.string.more_settings), onBack = onBack)
+                SettingsScreen(
+                    homeSort = homeSort,
+                    presets = presetState.presets,
+                    selectedHomePresetId = presetState.selectedHomePresetId,
+                    meteredImageQuality = meteredImageQuality,
+                    wifiImageQuality = wifiImageQuality,
+                    videoAutoPlay = videoAutoPlay,
+                    videoMuted = videoMuted,
+                    tagsCollapsed = tagsCollapsed,
+                    downloadDirectory = downloadDirectory,
+                    prefetchOnMetered = prefetchOnMetered,
+                    videoLoop = videoLoop,
+                    onHomeSortChange = { sort ->
+                        useExactHomeQuery = false
+                        settingsViewModel.setHomeSort(sort)
+                    },
+                    onPresetSelected = { preset ->
+                        presetViewModel.selectHomePreset(preset.id)
+                        settingsViewModel.setHomeSort(HomeSort.Custom)
+                    },
+                    onCreatePreset = {
+                        presetsReturnToSettings = true
+                        presetsVisible = true
+                        settingsVisible = false
+                    },
+                    onMeteredImageQualityChange = settingsViewModel::setMeteredImageQuality,
+                    onWifiImageQualityChange = settingsViewModel::setWifiImageQuality,
+                    onVideoAutoPlayChange = settingsViewModel::setVideoAutoPlay,
+                    onVideoMutedChange = settingsViewModel::setVideoMuted,
+                    onTagsCollapsedChange = settingsViewModel::setTagsCollapsed,
+                    onDownloadDirectoryChange = settingsViewModel::setDownloadDirectory,
+                    onPrefetchOnMeteredChange = settingsViewModel::setPrefetchOnMetered,
+                    onVideoLoopChange = settingsViewModel::setVideoLoop,
+                    scrollState = settingsScrollState,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
-        return
+    }
     }
 
     currentDetailId?.let { postId ->
         val detailSite = E621Site.entries.firstOrNull { it.name == detailSiteName } ?: site
         val detailAccount = accountState.account?.takeIf { it.site == detailSite }
-        fun moveDetail(offset: Int) {
-            val index = detailSequence.indexOf(postId)
-            val next = detailSequence.getOrNull(index + offset) ?: return
-            detailSlideDirection = offset
-            currentDetailId = next
-            if (activeTag == null) originalDetailId = next
-        }
-        Column(
+        AnimatedContent(
+            targetState = postId,
+            contentKey = { it },
+            transitionSpec = {
+                val initialIndex = detailSequence.indexOf(initialState)
+                val targetIndex = detailSequence.indexOf(targetState)
+                val sequenceDirection = when {
+                    initialIndex >= 0 && targetIndex > initialIndex -> 1
+                    initialIndex >= 0 && targetIndex < initialIndex -> -1
+                    else -> detailSlideDirection
+                }
+                val direction = if (activePoolId != null && activeTag == null) {
+                    -sequenceDirection
+                } else {
+                    sequenceDirection
+                }
+                if (direction == 0) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    slideInHorizontally(
+                        animationSpec = tween(durationMillis = 280),
+                        initialOffsetX = { width -> direction * width },
+                    ) togetherWith slideOutHorizontally(
+                        animationSpec = tween(durationMillis = 280),
+                        targetOffsetX = { width -> -direction * width },
+                    )
+                }
+            },
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background),
-        ) {
-            SecondaryHeader(
-                title = stringResource(R.string.post_number, postId),
-                onBack = {
-                    if (activeTag != null) currentDetailId = null
-                    else {
-                        returnFocusPostId = postId
-                        currentDetailId = null
-                        originalDetailId = null
-                    }
-                },
-            )
-            BoxWithConstraints(modifier = Modifier.weight(1f)) {
-                val density = LocalDensity.current
-                val slideOffset = remember { Animatable(0f) }
-                LaunchedEffect(postId) {
-                    if (detailSlideDirection != 0) {
-                        slideOffset.snapTo(
-                            detailSlideDirection * with(density) { maxWidth.toPx() },
-                        )
-                        slideOffset.animateTo(0f, animationSpec = tween(durationMillis = 260))
-                    } else {
-                        slideOffset.snapTo(0f)
-                    }
+        ) { animatedPostId ->
+            val detailIndex = detailSequence.indexOf(animatedPostId)
+            val nearbyPostIds = if (detailIndex < 0 || !prefetchEnabled) {
+                emptyList()
+            } else {
+                listOf(-1, 1, -2, 2).mapNotNull { offset ->
+                    detailSequence.getOrNull(detailIndex + offset)
                 }
+            }
+            fun moveDetail(offset: Int) {
+                val next = detailSequence.getOrNull(detailIndex + offset) ?: return
+                detailSlideDirection = offset
+                currentDetailId = next
+                if (activeTag == null) originalDetailId = next
+            }
+            Column(Modifier.fillMaxSize()) {
+                SecondaryHeader(
+                    title = stringResource(R.string.post_number, animatedPostId),
+                    onBack = { returnFromPost(animatedPostId) },
+                )
                 PostDetailRoute(
                     site = detailSite,
-                    postId = postId,
+                    postId = animatedPostId,
                     account = detailAccount,
-                    imageQualityPreference = imageQuality,
+                    meteredImageQualityPreference = meteredImageQuality,
+                    wifiImageQualityPreference = wifiImageQuality,
                     videoAutoPlay = videoAutoPlay,
                     videoMuted = videoMuted,
+                    videoLoop = videoLoop,
+                    prefetchPostIds = nearbyPostIds,
+                    prefetchEnabled = prefetchEnabled,
                     tagsCollapsedByDefault = tagsCollapsed,
                     downloadDirectory = safeDownloadDirectory,
                     viewModel = postDetailViewModel,
-                    onTagClick = { tag -> activeTag = tag; currentDetailId = null },
-                    onPrevious = { moveDetail(-1) },
-                    onNext = { moveDetail(1) },
+                    onTagClick = { tag ->
+                        if (activeTag == null) {
+                            tagReturnSecondPostId = if (activePoolId == null) initialSecondLevelPostId else null
+                        }
+                        activeTag = tag
+                        currentDetailId = null
+                    },
+                    poolLinks = membershipPools.map { pool ->
+                        PoolNavigationInfo(pool.id, pool.name, pool.postIds)
+                    },
+                    onPoolClick = { pool ->
+                        activePoolId = pool.id
+                        activePoolTitle = pool.name
+                        poolReturnPostId = animatedPostId
+                        activeTag = null
+                        currentDetailId = null
+                    },
+                    onPoolPostClick = { pool, targetIndex, direction ->
+                        activePoolId = pool.id
+                        activePoolTitle = pool.name
+                        poolReturnPostId = null
+                        postBackStack = longArrayOf()
+                        detailSequence = pool.postIds.toLongArray()
+                        detailSlideDirection = direction
+                        currentDetailId = pool.postIds.getOrNull(targetIndex)
+                    },
+                    onRelatedPostClick = { relatedId ->
+                        postBackStack = postBackStack + animatedPostId
+                        detailSlideDirection = 1
+                        currentDetailId = relatedId
+                    },
+                    onPrevious = { moveDetail(if (activePoolId != null && activeTag == null) 1 else -1) },
+                    onNext = { moveDetail(if (activePoolId != null && activeTag == null) -1 else 1) },
                     onRequireLogin = {
                         Toast.makeText(context, R.string.login_required, Toast.LENGTH_SHORT).show()
                     },
@@ -409,11 +657,55 @@ private fun E430Home(
                     },
                     modifier = Modifier
                         .fillMaxSize()
-                        .graphicsLayer { translationX = slideOffset.value },
+                        .weight(1f),
                 )
             }
         }
         return
+    }
+
+    @Composable
+    fun PoolDetailOverlay() {
+    if (activeTag == null) activePoolId?.let { poolId ->
+        val poolSite = E621Site.entries.firstOrNull { it.name == detailSiteName } ?: site
+        val poolTitle = poolDetailState.pool
+            ?.takeIf { it.id == poolId }
+            ?.name
+            ?: activePoolTitle
+        SecondaryPage(
+            onExited = {
+                val returnPost = poolReturnPostId
+                poolReturnPostId = null
+                activePoolId = null
+                if (returnPost != null) currentDetailId = returnPost
+            },
+        ) { onBack ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+            ) {
+                SecondaryHeader(
+                    title = stringResource(R.string.pool_title, poolId, poolTitle),
+                    onBack = onBack,
+                )
+                PoolDetailRoute(
+                    site = poolSite,
+                    poolId = poolId,
+                    imageQuality = if (isNetworkMetered) meteredImageQuality else wifiImageQuality,
+                    viewModel = poolDetailViewModel,
+                    onPostClick = { clickedPostId, poolPostIds ->
+                        poolReturnPostId = null
+                        postBackStack = longArrayOf()
+                        detailSequence = poolPostIds.toLongArray()
+                        detailSlideDirection = 0
+                        currentDetailId = clickedPostId
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
     }
 
     activeTag?.let { tag ->
@@ -426,8 +718,8 @@ private fun E430Home(
                 title = tag,
                 onBack = {
                     activeTag = null
-                    currentDetailId = originalDetailId
-                    detailSequence = longArrayOf(originalDetailId ?: 0L)
+                    currentDetailId = if (activePoolId == null) tagReturnSecondPostId else null
+                    tagReturnSecondPostId?.let { detailSequence = longArrayOf(it) }
                 },
             )
             PostGridRoute(
@@ -442,12 +734,21 @@ private fun E430Home(
                 onPostClick = { id ->
                     detailSequence = tagPostState.items.map { it.id }.toLongArray()
                     detailSlideDirection = 0
+                    postBackStack = longArrayOf()
                     currentDetailId = id
                 },
+                prefetchEnabled = prefetchEnabled,
                 modifier = Modifier.weight(1f),
             )
         }
         return
+    }
+
+    LaunchedEffect(openDrawerOnMain) {
+        if (openDrawerOnMain) {
+            drawerState.open()
+            openDrawerOnMain = false
+        }
     }
 
     ModalNavigationDrawer(
@@ -466,18 +767,21 @@ private fun E430Home(
                 },
                 onSiteChange = { useE926 = it },
                 onDarkThemeChange = onDarkThemeChange,
+                onPresetsClick = {
+                    presetsReturnToSettings = false
+                    presetsVisible = true
+                },
                 onMoreSettingsClick = {
                     settingsVisible = true
-                    scope.launch { drawerState.close() }
                 },
                 onAccountClick = {
                     if (accountState.account == null) {
                         accountViewModel.clearLoginError()
                         loginDialogVisible = true
+                        scope.launch { drawerState.close() }
                     } else {
                         accountVisible = true
                     }
-                    scope.launch { drawerState.close() }
                 },
             )
         },
@@ -491,12 +795,11 @@ private fun E430Home(
                 query = query,
                 filtersVisible = filtersVisible,
                 onQueryChange = { query = it },
-                onSearch = {
-                    submittedQuery = query.trim()
-                    selectedDestinationName = Destination.Home.name
-                },
+                onSearch = { searchText -> applySearch(searchText) },
                 onMenuClick = { scope.launch { drawerState.open() } },
                 onSearchFocusChange = { filtersVisible = it },
+                presets = presetState.presets,
+                onPresetSelected = { preset -> applySearch(preset.query) },
             )
             if (accountState.restoreFailed) AccountRestoreErrorBanner()
             if (accountState.account == null && !accountState.isRestoring) AnonymousBanner()
@@ -504,7 +807,14 @@ private fun E430Home(
                 Destination.Home,
                 Destination.Latest,
                 Destination.Popular,
-                -> PostGridRoute(
+                -> if (
+                    destination == Destination.Home &&
+                    (accountState.isRestoring || presetState.isLoading || initializedPresetOwner != presetState.owner)
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.weight(1f).fillMaxSize()) {
+                        androidx.compose.material3.CircularProgressIndicator()
+                    }
+                } else PostGridRoute(
                     request = PostGridRequest(
                         site = site,
                         feed = when (destination) {
@@ -512,25 +822,43 @@ private fun E430Home(
                             Destination.Latest -> PostFeed.Latest
                             else -> PostFeed.Popular
                         },
-                        homeSort = homeSort,
-                        query = homeQuery,
+                        homeSort = if (destination == Destination.Home && useExactHomeQuery) {
+                            HomeSort.Custom
+                        } else {
+                            homeSort
+                        },
+                        query = if (destination == Destination.Home) submittedQuery else "",
                         blacklist = activeBlacklist,
+                        requestRevision = if (destination == Destination.Home) searchRevision else 0,
                     ),
                     viewModel = postViewModel,
                     onPostClick = { id ->
                         detailSlideDirection = 0
                         originalDetailId = id
+                        initialSecondLevelPostId = id
+                        postBackStack = longArrayOf()
+                        activePoolId = null
                         currentDetailId = id
                         detailSiteName = site.name
                         detailSequence = mainPostState.items.map { it.id }.toLongArray()
                     },
                     focusPostId = returnFocusPostId,
                     onFocusConsumed = { returnFocusPostId = null },
+                    scrollToTopKey = searchRevision,
+                    prefetchEnabled = prefetchEnabled,
                     modifier = Modifier.weight(1f),
                 )
                 Destination.Pools -> PoolGridRoute(
-                    request = PoolGridRequest(site = site, query = submittedQuery),
+                    request = PoolGridRequest(site = site, query = ""),
                     viewModel = poolViewModel,
+                    onPoolClick = { pool ->
+                        activePoolId = pool.id
+                        activePoolTitle = pool.name
+                        poolReturnPostId = null
+                        detailSiteName = site.name
+                        postBackStack = longArrayOf()
+                        initialSecondLevelPostId = null
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 Destination.Favorites -> {
@@ -550,17 +878,62 @@ private fun E430Home(
                             onPostClick = { id ->
                                 detailSlideDirection = 0
                                 originalDetailId = id
+                                initialSecondLevelPostId = id
+                                postBackStack = longArrayOf()
+                                activePoolId = null
                                 currentDetailId = id
                                 detailSiteName = account.site.name
                                 detailSequence = mainPostState.items.map { it.id }.toLongArray()
                             },
                             focusPostId = returnFocusPostId,
                             onFocusConsumed = { returnFocusPostId = null },
+                            scrollToTopKey = searchRevision,
+                            prefetchEnabled = prefetchEnabled,
                             modifier = Modifier.weight(1f),
                         )
                     }
                 }
             }
+        }
+    }
+    PoolDetailOverlay()
+    DrawerSecondaryOverlay()
+}
+
+@Composable
+private fun SecondaryPage(
+    onExited: () -> Unit,
+    content: @Composable (onBack: () -> Unit) -> Unit,
+) {
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .zIndex(1f),
+    ) {
+        val density = LocalDensity.current
+        val widthPx = with(density) { maxWidth.toPx() }
+        val offset = remember { Animatable(widthPx) }
+        val transitionScope = rememberCoroutineScope()
+        var isExiting by remember { mutableStateOf(false) }
+        val requestExit: () -> Unit = {
+            if (!isExiting) {
+                isExiting = true
+                transitionScope.launch {
+                    offset.animateTo(widthPx, animationSpec = tween(260))
+                    onExited()
+                }
+            }
+        }
+        LaunchedEffect(Unit) {
+            offset.animateTo(0f, animationSpec = tween(260))
+        }
+        BackHandler(onBack = requestExit)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationX = offset.value },
+        ) {
+            content(requestExit)
         }
     }
 }
@@ -658,10 +1031,11 @@ private fun AppDrawer(
     onDestinationClick: (Destination) -> Unit,
     onSiteChange: (Boolean) -> Unit,
     onDarkThemeChange: (Boolean) -> Unit,
+    onPresetsClick: () -> Unit,
     onMoreSettingsClick: () -> Unit,
     onAccountClick: () -> Unit,
 ) {
-    ModalDrawerSheet {
+    ModalDrawerSheet(modifier = Modifier.verticalScroll(rememberScrollState())) {
         AccountHeader(
             account = account,
             siteName = siteName,
@@ -693,6 +1067,35 @@ private fun AppDrawer(
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
         }
+
+        Spacer(modifier = Modifier.height(20.dp))
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp))
+
+        Text(
+            text = stringResource(R.string.tools),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 28.dp, top = 20.dp, bottom = 8.dp),
+        )
+        NavigationDrawerItem(
+            label = { Text(stringResource(R.string.presets)) },
+            selected = false,
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_presets),
+                    contentDescription = null,
+                )
+            },
+            badge = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_chevron_right),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            },
+            onClick = onPresetsClick,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
 
         Spacer(modifier = Modifier.height(20.dp))
         HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp))

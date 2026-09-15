@@ -3,12 +3,26 @@ package com.example.e430.pools.data
 import com.example.e430.core.network.E621Site
 import com.example.e430.pools.data.remote.PoolService
 import com.example.e430.pools.model.PoolPreview
+import com.example.e430.pools.model.PoolDetail
 import com.example.e430.posts.data.PostRepository
 
 class PoolRepository(
     private val services: Map<E621Site, PoolService>,
     private val postRepository: PostRepository,
 ) {
+    suspend fun getPool(site: E621Site, id: Long): PoolDetail =
+        requireNotNull(services[site]).getPool(id).let { pool ->
+            PoolDetail(
+                id = pool.id,
+                name = pool.name,
+                description = pool.description,
+                postIds = pool.postIds,
+            )
+        }
+
+    suspend fun getPoolsByIds(site: E621Site, ids: List<Long>): List<PoolDetail> =
+        ids.distinct().map { getPool(site, it) }
+
     suspend fun getPools(site: E621Site, query: String, page: Int): PoolPage {
         val pools = requireNotNull(services[site]).getPools(
             nameMatches = query.trim().ifEmpty { null },

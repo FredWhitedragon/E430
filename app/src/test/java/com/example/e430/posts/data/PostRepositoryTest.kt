@@ -2,6 +2,8 @@ package com.example.e430.posts.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import com.example.e430.posts.model.HomeSort
+import com.example.e430.posts.model.PostFeed
 
 class PostRepositoryTest {
     private val repository = PostRepository(emptyMap())
@@ -26,6 +28,14 @@ class PostRepositoryTest {
         assertEquals(
             "rating:s order:favcount fox",
             repository.buildTags("  rating:s order:favcount fox  ", null),
+        )
+    }
+
+    @Test
+    fun latestFeedAlwaysIgnoresHomeSearchTerms() {
+        assertEquals(
+            "order:id_desc",
+            repository.buildFeedTags(PostFeed.Latest, HomeSort.Custom, "wolf rating:e"),
         )
     }
 }

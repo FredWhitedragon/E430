@@ -1,5 +1,9 @@
 package com.example.e430.posts.detail.data
 
+import android.content.Context
+import coil.ImageLoader
+import coil.request.ImageRequest
+import com.example.e430.core.network.E430_USER_AGENT
 import com.example.e430.core.network.E621Site
 import com.example.e430.posts.detail.data.remote.CommentDto
 import com.example.e430.posts.detail.data.remote.PostDetailDto
@@ -10,10 +14,87 @@ import com.example.e430.posts.detail.model.MediaSource
 import com.example.e430.posts.detail.model.PostComment
 import com.example.e430.posts.detail.model.PostDetail
 import com.example.e430.posts.model.Rating
+import okhttp3.Headers.Companion.headersOf
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
 
-class PostDetailRepository(private val services: Map<E621Site, PostDetailService>) {
-    suspend fun getPost(site: E621Site, id: Long): PostDetail = service(site).getPost(id).post.toModel()
-    suspend fun getComments(site: E621Site, postId: Long) = service(site).getComments(postId = postId).map(CommentDto::toModel)
+data class PostDetailBundle(
+    val post: PostDetail,
+    val comments: List<PostComment>,
+    val commentsLoaded: Boolean = true,
+)
+
+class PostDetailRepository(
+    private val services: Map<E621Site, PostDetailService>,
+    private val context: Context,
+    private val imageLoader: ImageLoader,
+) {
+    private data class CacheKey(val site: E621Site, val postId: Long)
+
+    private val cache = object : LinkedHashMap<CacheKey, PostDetailBundle>(CACHE_LIMIT, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CacheKey, PostDetailBundle>?): Boolean =
+            size > CACHE_LIMIT
+    }
+    private val loadMutex = Mutex()
+    private val cacheGeneration = AtomicLong()
+
+    fun cachedDetail(site: E621Site, id: Long): PostDetailBundle? =
+        synchronized(cache) { cache[CacheKey(site, id)] }
+
+    suspend fun getPost(site: E621Site, id: Long): PostDetail =
+        cachedDetail(site, id)?.post ?: service(site).getPost(id).post.toModel().also { post ->
+            synchronized(cache) {
+                cache.putIfAbsent(CacheKey(site, id), PostDetailBundle(post, emptyList(), commentsLoaded = false))
+            }
+        }
+
+    suspend fun getComments(site: E621Site, id: Long): List<PostComment> =
+        cachedDetail(site, id)?.takeIf { it.commentsLoaded }?.comments
+            ?: service(site).getComments(postId = id).map(CommentDto::toModel)
+
+    suspend fun getDetail(site: E621Site, id: Long): PostDetailBundle = loadMutex.withLock {
+        val key = CacheKey(site, id)
+        synchronized(cache) { cache[key] }?.takeIf { it.commentsLoaded }?.let { return@withLock it }
+        val generation = cacheGeneration.get()
+        val post = synchronized(cache) { cache[key] }?.post ?: service(site).getPost(id).post.toModel()
+        val comments = service(site).getComments(postId = id).map(CommentDto::toModel)
+        PostDetailBundle(post, comments).also { bundle ->
+            if (generation == cacheGeneration.get()) {
+                synchronized(cache) { cache[key] = bundle }
+            }
+        }
+    }
+
+    suspend fun prefetch(
+        site: E621Site,
+        id: Long,
+        imageQuality: MediaQuality,
+        preloadImage: Boolean,
+    ) {
+        val bundle = getDetail(site, id)
+        if (!preloadImage || bundle.post.kind == MediaKind.Video) return
+        val source = bundle.post.mediaSources.firstOrNull { it.quality == imageQuality }
+            ?: bundle.post.mediaSources.lastOrNull()
+            ?: return
+        imageLoader.execute(
+            ImageRequest.Builder(context)
+                .data(source.url)
+                .headers(headersOf("User-Agent", E430_USER_AGENT))
+                .build(),
+        )
+    }
+
+    fun cacheSnapshot(site: E621Site, post: PostDetail, comments: List<PostComment>) {
+        synchronized(cache) {
+            cache[CacheKey(site, post.id)] = PostDetailBundle(post, comments, commentsLoaded = true)
+        }
+    }
+
+    fun clearCache() {
+        cacheGeneration.incrementAndGet()
+        synchronized(cache) { cache.clear() }
+    }
     suspend fun createComment(site: E621Site, postId: Long, body: String) = service(site).createComment(postId, body).toModel()
     suspend fun updateComment(site: E621Site, id: Long, body: String) = service(site).updateComment(id, body)
     suspend fun hideComment(site: E621Site, id: Long) = service(site).hideComment(id).toModel()
@@ -22,6 +103,10 @@ class PostDetailRepository(private val services: Map<E621Site, PostDetailService
     suspend fun addFavorite(site: E621Site, id: Long) = service(site).addFavorite(id)
     suspend fun removeFavorite(site: E621Site, id: Long) = service(site).removeFavorite(id)
     private fun service(site: E621Site) = requireNotNull(services[site])
+
+    private companion object {
+        const val CACHE_LIMIT = 10
+    }
 }
 
 private fun PostDetailDto.toModel(): PostDetail {

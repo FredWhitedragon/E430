@@ -35,17 +35,7 @@ class PostRepository(
                 endReached = response.size < PAGE_SIZE,
             )
         }
-        val order = when (feed) {
-            PostFeed.Home -> when (homeSort) {
-                HomeSort.Latest -> "order:id_desc"
-                HomeSort.Popular -> "order:score"
-                HomeSort.Custom -> null
-            }
-            PostFeed.Latest -> "order:id_desc"
-            PostFeed.Popular -> error("Popular uses the dedicated endpoint")
-            PostFeed.Favorites -> error("Favorites uses the dedicated endpoint")
-        }
-        val tags = buildTags(query, order)
+        val tags = buildFeedTags(feed, homeSort, query)
         val response = service.getPosts(tags = tags, limit = PAGE_SIZE, page = page)
         return PostPage(
             items = response.filterNot(matcher::blocks).map(PostThumbnailDto::toModel).filter { it.previewUrl != null },
@@ -73,6 +63,20 @@ class PostRepository(
         return (userTags + order).joinToString(" ")
     }
 
+    internal fun buildFeedTags(feed: PostFeed, homeSort: HomeSort, query: String): String {
+        val order = when (feed) {
+            PostFeed.Home -> when (homeSort) {
+                HomeSort.Latest -> "order:id_desc"
+                HomeSort.Popular -> "order:score"
+                HomeSort.Custom -> null
+            }
+            PostFeed.Latest -> "order:id_desc"
+            PostFeed.Popular -> error("Popular uses the dedicated endpoint")
+            PostFeed.Favorites -> error("Favorites uses the dedicated endpoint")
+        }
+        return buildTags(if (feed == PostFeed.Home) query else "", order)
+    }
+
     companion object {
         const val PAGE_SIZE = 40
     }
@@ -96,4 +100,5 @@ private fun PostThumbnailDto.toModel() = MediaPreview(
         "e" -> Rating.Explicit
         else -> Rating.Safe
     },
+    fileExtension = fileExtension,
 )

@@ -45,4 +45,5 @@ data class PostThumbnailDto(
     val tags: String = "",
     @SerialName("uploader_id") val uploaderId: Long = 0,
     val flags: String = "",
+    @SerialName("file_ext") val fileExtension: String = "",
 )

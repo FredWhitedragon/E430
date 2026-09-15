@@ -19,6 +19,8 @@ class PostThumbnailDtoTest {
                 "fav_count": 3,
                 "comment_count": 4,
                 "rating": "q",
+                "file_ext": "webm",
+                "tags": "wolf animated",
                 "future_field": true
             }""",
         )
@@ -27,5 +29,7 @@ class PostThumbnailDtoTest {
         assertNull(dto.previewUrl)
         assertEquals(12, dto.score)
         assertEquals("q", dto.rating)
+        assertEquals("webm", dto.fileExtension)
+        assertEquals("wolf animated", dto.tags)
     }
 }

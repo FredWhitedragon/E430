@@ -22,6 +22,7 @@ data class PostGridRequest(
     val homeSort: HomeSort,
     val query: String,
     val blacklist: String = "",
+    val requestRevision: Int = 0,
 )
 
 data class PostGridUiState(

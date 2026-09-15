@@ -1,12 +1,14 @@
 package com.example.e430.app
 
 import android.content.Context
+import coil.imageLoader
 import com.example.e430.account.data.AccountRepository
 import com.example.e430.account.data.remote.AccountService
 import com.example.e430.core.network.CredentialProvider
 import com.example.e430.core.network.E621Network
 import com.example.e430.core.network.E621Site
 import com.example.e430.pools.data.PoolRepository
+import com.example.e430.presets.data.PresetRepository
 import com.example.e430.pools.data.remote.PoolService
 import com.example.e430.posts.data.PostRepository
 import com.example.e430.posts.data.remote.PostService
@@ -17,6 +19,7 @@ import com.example.e430.settings.data.SettingsRepository
 import com.example.e430.core.storage.EncryptedCredentialStore
 
 class AppContainer(context: Context) {
+    val imageLoader = context.imageLoader
     private val credentialProvider = CredentialProvider()
     private val network = E621Network(credentialProvider)
     private val postServices = E621Site.entries.associateWith { site ->
@@ -34,8 +37,13 @@ class AppContainer(context: Context) {
 
     val postRepository = PostRepository(postServices)
     val poolRepository = PoolRepository(poolServices, postRepository)
+    val presetRepository = PresetRepository(context.applicationContext)
     val settingsRepository = SettingsRepository(context.applicationContext)
-    val postDetailRepository = PostDetailRepository(postDetailServices)
+    val postDetailRepository = PostDetailRepository(
+        postDetailServices,
+        context.applicationContext,
+        imageLoader,
+    )
     val mediaFileRepository = MediaFileRepository(network.mediaClient)
     val accountRepository = AccountRepository(
         services = accountServices,

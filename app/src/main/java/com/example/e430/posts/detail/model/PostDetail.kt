@@ -11,6 +11,12 @@ data class MediaSource(
     val estimatedBytes: Long,
 )
 
+data class PoolNavigationInfo(
+    val id: Long,
+    val name: String,
+    val postIds: List<Long>,
+)
+
 data class PostDetail(
     val id: Long,
     val kind: MediaKind,
