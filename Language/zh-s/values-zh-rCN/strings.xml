@@ -196,4 +196,7 @@
     <plurals name="pool_post_count">
         <item quantity="other">%d 个稿件</item>
     </plurals>
+    <plurals name="tag_post_count">
+        <item quantity="other">%d 个稿件</item>
+    </plurals>
 </resources>

@@ -55,6 +55,14 @@ class PostGridViewModel(
 
     fun refresh() = loadFirstPage(refresh = true)
 
+    fun removeUnavailablePreviews(ids: Set<Long>) {
+        if (ids.isEmpty()) return
+        _uiState.update { state ->
+            val remaining = state.items.filterNot { it.id in ids }
+            if (remaining.size == state.items.size) state else state.copy(items = remaining)
+        }
+    }
+
     fun clear() {
         loadJob?.cancel()
         activeRequest = null

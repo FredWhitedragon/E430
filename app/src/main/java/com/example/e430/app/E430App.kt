@@ -110,6 +110,7 @@ import com.example.e430.posts.detail.model.PoolNavigationInfo
 import com.example.e430.posts.detail.ui.PostDetailRoute
 import com.example.e430.posts.detail.ui.PostDetailViewModel
 import com.example.e430.search.ui.SearchHeader
+import com.example.e430.search.ui.SearchSuggestionViewModel
 import com.example.e430.settings.data.AppLanguageManager
 import com.example.e430.settings.model.AppLanguage
 import com.example.e430.settings.ui.SettingsScreen
@@ -190,6 +191,10 @@ private fun E430Home(
         factory = PresetViewModel.factory(container.presetRepository),
     )
     val presetState by presetViewModel.uiState.collectAsStateWithLifecycle()
+    val searchSuggestionViewModel: SearchSuggestionViewModel = viewModel(
+        factory = SearchSuggestionViewModel.factory(container.tagSuggestionRepository),
+    )
+    val searchSuggestionState by searchSuggestionViewModel.uiState.collectAsStateWithLifecycle()
     val homeSort by settingsViewModel.homeSort.collectAsStateWithLifecycle()
     val meteredImageQuality by settingsViewModel.meteredImageQuality.collectAsStateWithLifecycle()
     val wifiImageQuality by settingsViewModel.wifiImageQuality.collectAsStateWithLifecycle()
@@ -828,11 +833,15 @@ private fun E430Home(
         ) {
             SearchHeader(
                 query = query,
+                site = site,
                 filtersVisible = filtersVisible,
+                suggestionState = searchSuggestionState,
                 onQueryChange = { query = it },
                 onSearch = { searchText -> applySearch(searchText) },
                 onMenuClick = { scope.launch { drawerState.open() } },
-                onSearchFocusChange = { filtersVisible = it },
+                onFiltersVisibleChange = { filtersVisible = it },
+                onSuggestionRequest = searchSuggestionViewModel::request,
+                onSuggestionsClear = searchSuggestionViewModel::clear,
                 presets = presetState.presets,
                 onPresetSelected = { preset -> applySearch(preset.query) },
             )
@@ -936,9 +945,13 @@ private fun E430Home(
     BackHandler(enabled = drawerHandlesBack) {
         scope.launch { drawerState.close() }
     }
+    BackHandler(enabled = !drawerHandlesBack && filtersVisible) {
+        filtersVisible = false
+    }
     var lastExitBackAt by remember { mutableLongStateOf(0L) }
     BackHandler(
         enabled = !drawerHandlesBack &&
+            !filtersVisible &&
             currentDetailId == null &&
             activeTag == null &&
             activePoolId == null &&

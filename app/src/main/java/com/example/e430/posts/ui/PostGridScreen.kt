@@ -44,6 +44,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalFocusManager
@@ -57,12 +58,12 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import com.example.e430.R
 import com.example.e430.core.network.E430_USER_AGENT
+import com.example.e430.core.ui.NewPreviewEntrance
 import com.example.e430.core.ui.RemotePreviewImage
 import com.example.e430.posts.model.MediaPreview
 import com.example.e430.posts.model.Rating
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -82,10 +83,12 @@ fun PostGridRoute(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(request) { viewModel.show(request) }
     PostGridScreen(
+        animationKey = request,
         uiState = uiState,
         onRefresh = viewModel::refresh,
         onRetry = viewModel::refresh,
         onLoadMore = viewModel::loadMore,
+        onRemoveUnavailablePreviews = viewModel::removeUnavailablePreviews,
         onPostClick = onPostClick,
         focusPostId = focusPostId,
         onFocusConsumed = onFocusConsumed,
@@ -98,10 +101,12 @@ fun PostGridRoute(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PostGridScreen(
+    animationKey: Any,
     uiState: PostGridUiState,
     onRefresh: () -> Unit,
     onRetry: () -> Unit,
     onLoadMore: () -> Unit,
+    onRemoveUnavailablePreviews: (Set<Long>) -> Unit,
     onPostClick: (Long) -> Unit,
     focusPostId: Long?,
     onFocusConsumed: () -> Unit,
@@ -113,6 +118,11 @@ private fun PostGridScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val focusManager = LocalFocusManager.current
     var handledScrollToTopKey by remember { mutableIntStateOf(scrollToTopKey) }
+    var pendingUnavailableIds by remember { mutableStateOf(emptySet<Long>()) }
+    val animatedItemIds = remember(animationKey) { mutableSetOf<Any>() }
+    LaunchedEffect(uiState.items) {
+        animatedItemIds.retainAll(uiState.items.mapTo(mutableSetOf<Any>(), MediaPreview::id))
+    }
     LaunchedEffect(scrollToTopKey) {
         if (scrollToTopKey != handledScrollToTopKey) {
             gridState.scrollToItem(0)
@@ -138,8 +148,15 @@ private fun PostGridScreen(
     LaunchedEffect(gridState) {
         snapshotFlow { gridState.isScrollInProgress }
             .distinctUntilChanged()
-            .filter { it }
-            .collect { focusManager.clearFocus() }
+            .collect { isScrolling ->
+                if (isScrolling) {
+                    focusManager.clearFocus()
+                } else if (pendingUnavailableIds.isNotEmpty()) {
+                    val unavailableIds = pendingUnavailableIds
+                    pendingUnavailableIds = emptySet()
+                    onRemoveUnavailablePreviews(unavailableIds)
+                }
+            }
     }
     LaunchedEffect(gridState, uiState.items.size) {
         snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
@@ -197,7 +214,24 @@ private fun PostGridScreen(
                     }
                 }
                 items(uiState.items, key = MediaPreview::id) { item ->
-                    MediaPreviewCard(item, onClick = { onPostClick(item.id) })
+                    NewPreviewEntrance(
+                        resultKey = animationKey,
+                        itemKey = item.id,
+                        animatedKeys = animatedItemIds,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        MediaPreviewCard(
+                            item = item,
+                            onClick = { onPostClick(item.id) },
+                            onPreviewUnavailable = { id ->
+                                if (gridState.isScrollInProgress) {
+                                    pendingUnavailableIds = pendingUnavailableIds + id
+                                } else {
+                                    onRemoveUnavailablePreviews(setOf(id))
+                                }
+                            },
+                        )
+                    }
                 }
                 if (uiState.isLoadingMore) {
                     item(span = StaggeredGridItemSpan.FullLine) {
@@ -224,21 +258,29 @@ fun MediaPreviewCard(
     item: MediaPreview,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onPreviewUnavailable: (Long) -> Unit = {},
 ) {
     var loadFailed by remember(item.previewUrl) { mutableStateOf(false) }
-    if (loadFailed || item.previewUrl == null) return
+    if (item.previewUrl == null) return
     val aspectRatio = (item.width.toFloat() / item.height).coerceIn(0.7f, 1.6f)
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         shape = RoundedCornerShape(0.dp),
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier
+            .graphicsLayer { alpha = if (loadFailed) 0f else 1f }
+            .then(if (loadFailed) Modifier else Modifier.clickable(onClick = onClick)),
     ) {
         Box {
             RemotePreviewImage(
                 url = item.previewUrl,
                 contentDescription = stringResource(R.string.post_preview),
-                onLoadFailed = { loadFailed = true },
+                onLoadFailed = {
+                    if (!loadFailed) {
+                        loadFailed = true
+                        onPreviewUnavailable(item.id)
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(aspectRatio),

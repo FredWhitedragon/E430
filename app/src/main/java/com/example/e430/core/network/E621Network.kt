@@ -10,7 +10,7 @@ import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-const val E430_USER_AGENT = "E430/0.1 (by FredWd on e621)"
+const val E430_USER_AGENT = "E430/0.2.0-beta (by FredWd on e621)"
 
 enum class E621Site(val baseUrl: String, val displayName: String) {
     E621("https://e621.net/", "e621"),

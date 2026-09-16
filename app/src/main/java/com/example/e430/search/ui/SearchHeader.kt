@@ -58,12 +58,15 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.e430.R
+import com.example.e430.core.network.E621Site
 import com.example.e430.core.ui.theme.E430Blue
 import com.example.e430.core.ui.theme.E430Gold
 import com.example.e430.presets.model.SearchPreset
@@ -71,6 +74,9 @@ import com.example.e430.search.model.RatingFilter
 import com.example.e430.search.model.SearchDateRange
 import com.example.e430.search.model.SearchFilterQuery
 import com.example.e430.search.model.SearchSort
+import com.example.e430.search.model.TagSuggestion
+import com.example.e430.search.model.replaceSearchCompletion
+import com.example.e430.search.model.searchCompletionTarget
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -83,17 +89,24 @@ import kotlin.math.hypot
 @Composable
 fun SearchHeader(
     query: String,
+    site: E621Site,
     filtersVisible: Boolean,
+    suggestionState: SearchSuggestionUiState,
     onQueryChange: (String) -> Unit,
     onSearch: (String) -> Unit,
     onMenuClick: () -> Unit,
-    onSearchFocusChange: (Boolean) -> Unit,
+    onFiltersVisibleChange: (Boolean) -> Unit,
+    onSuggestionRequest: (E621Site, String, Boolean) -> Unit,
+    onSuggestionsClear: () -> Unit,
     presets: List<SearchPreset>,
     onPresetSelected: (SearchPreset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val focusManager = LocalFocusManager.current
     var showingPresets by rememberSaveable { mutableStateOf(false) }
+    var searchFocused by remember { mutableStateOf(false) }
+    var suggestionsSuppressed by remember { mutableStateOf(false) }
+    var lastSuggestionText by remember { mutableStateOf(query) }
     val textFieldState = rememberTextFieldState(query)
     val textScrollState = rememberScrollState()
     val interactionSource = remember { MutableInteractionSource() }
@@ -104,6 +117,8 @@ fun SearchHeader(
     val maximumStepPx = with(LocalDensity.current) { 18.dp.toPx() }
     LaunchedEffect(query) {
         if (query != textFieldState.text.toString()) {
+            lastSuggestionText = query
+            onSuggestionsClear()
             textFieldState.edit {
                 replace(0, length, query)
                 selection = TextRange(length)
@@ -119,6 +134,36 @@ fun SearchHeader(
     }
     LaunchedEffect(filtersVisible) {
         if (!filtersVisible) showingPresets = false
+    }
+    LaunchedEffect(textFieldState, searchFocused, site, showingPresets) {
+        if (!searchFocused) {
+            onSuggestionsClear()
+            return@LaunchedEffect
+        }
+        snapshotFlow {
+            SearchFieldSnapshot(
+                text = textFieldState.text.toString(),
+                cursor = textFieldState.selection.start,
+            )
+        }
+            .distinctUntilChanged()
+            .collect { snapshot ->
+                val textChanged = snapshot.text != lastSuggestionText
+                if (textChanged) {
+                    lastSuggestionText = snapshot.text
+                    suggestionsSuppressed = false
+                }
+
+                val target = searchCompletionTarget(snapshot.text, snapshot.cursor)
+                if (target == null) {
+                    suggestionsSuppressed = true
+                    onSuggestionsClear()
+                } else if (suggestionsSuppressed || showingPresets) {
+                    onSuggestionsClear()
+                } else {
+                    onSuggestionRequest(site, target.queryPrefix, target.usesLocalMetaTags)
+                }
+            }
     }
 
     Surface(
@@ -136,6 +181,7 @@ fun SearchHeader(
                 IconButton(
                     onClick = {
                         focusManager.clearFocus()
+                        onFiltersVisibleChange(false)
                         onMenuClick()
                     },
                 ) {
@@ -154,6 +200,8 @@ fun SearchHeader(
                     unfocusedTextColor = Color(0xFF17232C),
                     focusedLeadingIconColor = E430Blue,
                     unfocusedLeadingIconColor = E430Blue,
+                    focusedTrailingIconColor = E430Blue,
+                    unfocusedTrailingIconColor = E430Blue,
                 )
                 BasicTextField(
                     state = textFieldState,
@@ -177,10 +225,32 @@ fun SearchHeader(
                             interactionSource = interactionSource,
                             placeholder = { Text(stringResource(R.string.search_hint)) },
                             leadingIcon = {
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_search),
-                                    contentDescription = null,
-                                )
+                                IconButton(
+                                    onClick = {
+                                        onSearch(textFieldState.text.toString())
+                                        focusManager.clearFocus()
+                                    },
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_search),
+                                        contentDescription = stringResource(R.string.search_hint),
+                                    )
+                                }
+                            },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = {
+                                        val showFilters = !filtersVisible
+                                        showingPresets = false
+                                        focusManager.clearFocus()
+                                        onFiltersVisibleChange(showFilters)
+                                    },
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_filter),
+                                        contentDescription = stringResource(R.string.search_filters),
+                                    )
+                                }
                             },
                             colors = fieldColors,
                             container = {
@@ -251,11 +321,14 @@ fun SearchHeader(
                                 }
                             }
                         }
-                        .onFocusChanged { onSearchFocusChange(it.isFocused) },
+                        .onFocusChanged { focusState ->
+                            searchFocused = focusState.isFocused
+                            if (focusState.isFocused) onFiltersVisibleChange(false)
+                        },
                 )
             }
             AnimatedVisibility(
-                visible = filtersVisible,
+                visible = searchFocused,
                 enter = expandVertically(),
                 exit = shrinkVertically(),
             ) {
@@ -285,17 +358,59 @@ fun SearchHeader(
                     } else {
                         SearchDropDownRow(stringResource(R.string.import_preset)) {
                             showingPresets = true
+                            onSuggestionsClear()
                         }
-                        SearchFilters(
-                            query = query,
-                            onQueryChange = onQueryChange,
-                        )
+                        suggestionState.suggestions.forEach { suggestion ->
+                            TagSuggestionRow(suggestion) {
+                                val text = textFieldState.text.toString()
+                                val target = searchCompletionTarget(
+                                    text = text,
+                                    cursor = textFieldState.selection.start,
+                                ) ?: return@TagSuggestionRow
+                                val (updated, cursor) = replaceSearchCompletion(
+                                    text = text,
+                                    target = target,
+                                    suggestion = suggestion.name,
+                                )
+                                suggestionsSuppressed = true
+                                lastSuggestionText = updated
+                                onSuggestionsClear()
+                                textFieldState.edit {
+                                    replace(0, length, updated)
+                                    selection = TextRange(cursor)
+                                }
+                            }
+                        }
                     }
+                }
+            }
+            AnimatedVisibility(
+                visible = filtersVisible,
+                enter = expandVertically(),
+                exit = shrinkVertically(),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                ) {
+                    SearchFilters(
+                        query = query,
+                        onQueryChange = onQueryChange,
+                    )
                 }
             }
         }
     }
 }
+
+private data class SearchFieldSnapshot(
+    val text: String,
+    val cursor: Int,
+)
 
 @Composable
 private fun SearchFilters(
@@ -540,4 +655,51 @@ private fun SearchDropDownRow(label: String, onClick: () -> Unit) {
             .clickable(onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 12.dp),
     )
+}
+
+@Composable
+private fun TagSuggestionRow(
+    suggestion: TagSuggestion,
+    onClick: () -> Unit,
+) {
+    val category = stringResource(
+        when (suggestion.category) {
+            1 -> R.string.tag_artist
+            2 -> R.string.tag_contributor
+            3 -> R.string.tag_copyright
+            4 -> R.string.tag_character
+            5 -> R.string.tag_species
+            6 -> R.string.tag_invalid
+            7 -> R.string.tag_meta
+            8 -> R.string.tag_lore
+            else -> R.string.tag_general
+        },
+    )
+    val details = suggestion.postCount?.let { count ->
+        "$category · ${pluralStringResource(R.plurals.tag_post_count, count, count)}"
+    } ?: category
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text = suggestion.name,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = details,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+        )
+    }
 }

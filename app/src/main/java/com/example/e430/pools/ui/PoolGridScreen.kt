@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.e430.R
+import com.example.e430.core.ui.NewPreviewEntrance
 import com.example.e430.core.ui.RemotePreviewImage
 import com.example.e430.pools.model.PoolPreview
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -56,6 +57,7 @@ fun PoolGridRoute(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(request) { viewModel.show(request) }
     PoolGridScreen(
+        animationKey = request,
         uiState = uiState,
         onRefresh = viewModel::refresh,
         onRetry = viewModel::refresh,
@@ -68,6 +70,7 @@ fun PoolGridRoute(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PoolGridScreen(
+    animationKey: Any,
     uiState: PoolGridUiState,
     onRefresh: () -> Unit,
     onRetry: () -> Unit,
@@ -77,6 +80,10 @@ private fun PoolGridScreen(
 ) {
     val gridState = rememberLazyStaggeredGridState()
     val focusManager = LocalFocusManager.current
+    val animatedItemIds = remember(animationKey) { mutableSetOf<Any>() }
+    LaunchedEffect(uiState.items) {
+        animatedItemIds.retainAll(uiState.items.mapTo(mutableSetOf<Any>(), PoolPreview::id))
+    }
     LaunchedEffect(gridState) {
         snapshotFlow { gridState.isScrollInProgress }
             .distinctUntilChanged()
@@ -130,7 +137,14 @@ private fun PoolGridScreen(
                     }
                 }
                 items(uiState.items, key = PoolPreview::id) { pool ->
-                    PoolCard(pool, onClick = { onPoolClick(pool) })
+                    NewPreviewEntrance(
+                        resultKey = animationKey,
+                        itemKey = pool.id,
+                        animatedKeys = animatedItemIds,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        PoolCard(pool, onClick = { onPoolClick(pool) })
+                    }
                 }
                 if (uiState.isLoadingMore) {
                     item(span = StaggeredGridItemSpan.FullLine) {

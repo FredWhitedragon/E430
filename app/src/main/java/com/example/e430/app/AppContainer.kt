@@ -17,6 +17,8 @@ import com.example.e430.posts.detail.data.MediaFileRepository
 import com.example.e430.posts.detail.data.remote.PostDetailService
 import com.example.e430.settings.data.SettingsRepository
 import com.example.e430.core.storage.EncryptedCredentialStore
+import com.example.e430.search.data.TagSuggestionRepository
+import com.example.e430.search.data.remote.TagSuggestionService
 
 class AppContainer(context: Context) {
     val imageLoader = context.imageLoader
@@ -34,10 +36,14 @@ class AppContainer(context: Context) {
     private val postDetailServices = E621Site.entries.associateWith { site ->
         network.retrofit(site).create(PostDetailService::class.java)
     }
+    private val tagSuggestionServices = E621Site.entries.associateWith { site ->
+        network.retrofit(site).create(TagSuggestionService::class.java)
+    }
 
     val postRepository = PostRepository(postServices)
     val poolRepository = PoolRepository(poolServices, postRepository)
     val presetRepository = PresetRepository(context.applicationContext)
+    val tagSuggestionRepository = TagSuggestionRepository(tagSuggestionServices)
     val settingsRepository = SettingsRepository(context.applicationContext)
     val postDetailRepository = PostDetailRepository(
         postDetailServices,
