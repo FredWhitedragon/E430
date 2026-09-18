@@ -1,11 +1,20 @@
 package com.example.e430.posts.detail.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.net.ConnectivityManager
+import android.provider.Settings
+import android.os.SystemClock
 import android.text.format.Formatter
+import android.view.Window
+import java.util.WeakHashMap
+import androidx.compose.animation.AnimatedVisibility
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -45,9 +54,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,7 +70,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -85,13 +98,16 @@ import com.example.e430.posts.detail.model.MediaSource
 import com.example.e430.posts.detail.model.PostComment
 import com.example.e430.posts.detail.model.PostDetail
 import com.example.e430.posts.detail.model.PoolNavigationInfo
+import com.example.e430.posts.detail.data.VideoPlaybackCache
 import com.example.e430.posts.model.Rating
 import com.example.e430.posts.model.MediaPreview
 import com.example.e430.posts.ui.MediaPreviewCard
 import com.example.e430.settings.model.ImageQualityPreference
+import com.example.e430.settings.model.VideoGestureSettings
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
@@ -111,6 +127,7 @@ fun PostDetailRoute(
     videoAutoPlay: Boolean,
     videoMuted: Boolean,
     videoLoop: Boolean,
+    videoGestureSettings: VideoGestureSettings,
     prefetchPostIds: List<Long>,
     prefetchEnabled: Boolean,
     tagsCollapsedByDefault: Boolean,
@@ -154,6 +171,7 @@ fun PostDetailRoute(
         videoAutoPlay = videoAutoPlay,
         videoMuted = videoMuted,
         videoLoop = videoLoop,
+        videoGestureSettings = videoGestureSettings,
         tagsCollapsedByDefault = tagsCollapsedByDefault,
         downloadDirectory = downloadDirectory,
         onVote = { if (account == null) onRequireLogin() else viewModel.vote(it) },
@@ -184,6 +202,7 @@ private fun PostDetailScreen(
     videoAutoPlay: Boolean,
     videoMuted: Boolean,
     videoLoop: Boolean,
+    videoGestureSettings: VideoGestureSettings,
     tagsCollapsedByDefault: Boolean,
     downloadDirectory: String,
     onVote: (Int) -> Unit,
@@ -225,7 +244,9 @@ private fun PostDetailScreen(
             }
             var selectedQuality by rememberSaveable(post.id, preferredQuality) { mutableStateOf(preferredQuality) }
             val displayedSource = post.mediaSources.find { it.quality == selectedQuality }
-                ?: post.mediaSources.lastOrNull()
+                ?: post.mediaSources.minByOrNull {
+                    kotlin.math.abs(it.quality.ordinal - selectedQuality.ordinal)
+                }
             var horizontalDrag by remember { mutableFloatStateOf(0f) }
             Column(
                 modifier = modifier
@@ -249,7 +270,15 @@ private fun PostDetailScreen(
                     onPoolClick = onPoolClick,
                     onPostClick = onPoolPostClick,
                 )
-                MediaSection(post, displayedSource, videoAutoPlay, videoMuted, videoLoop)
+                MediaSection(
+                    post = post,
+                    source = displayedSource,
+                    autoPlay = videoAutoPlay,
+                    muted = videoMuted,
+                    loop = videoLoop,
+                    videoGestureSettings = videoGestureSettings,
+                    onQualitySelected = { selectedQuality = it },
+                )
                 MediaControlRow(
                     post = post,
                     displayedSource = displayedSource,
@@ -360,7 +389,15 @@ private fun LoadingBlock(
 }
 
 @Composable
-private fun MediaSection(post: PostDetail, source: MediaSource?, autoPlay: Boolean, muted: Boolean, loop: Boolean) {
+private fun MediaSection(
+    post: PostDetail,
+    source: MediaSource?,
+    autoPlay: Boolean,
+    muted: Boolean,
+    loop: Boolean,
+    videoGestureSettings: VideoGestureSettings,
+    onQualitySelected: (MediaQuality) -> Unit,
+) {
     if (source == null) {
         Text(
             stringResource(R.string.media_unavailable),
@@ -370,7 +407,17 @@ private fun MediaSection(post: PostDetail, source: MediaSource?, autoPlay: Boole
         return
     }
     if (post.kind == MediaKind.Video) {
-        VideoPlayer(source.url, autoPlay, muted, loop, post.width, post.height)
+        VideoPlayer(
+            sources = post.mediaSources,
+            selectedSource = source,
+            autoPlay = autoPlay,
+            muted = muted,
+            loop = loop,
+            gestureSettings = videoGestureSettings,
+            width = post.width,
+            height = post.height,
+            onQualitySelected = onQualitySelected,
+        )
     } else {
         ZoomableImage(source.url, post.width, post.height)
     }
@@ -423,29 +470,104 @@ private fun FullScreenImage(model: ImageRequest, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun VideoPlayer(url: String, autoPlay: Boolean, muted: Boolean, loop: Boolean, width: Int, height: Int) {
+@androidx.annotation.OptIn(UnstableApi::class)
+private fun VideoPlayer(
+    sources: List<MediaSource>,
+    selectedSource: MediaSource,
+    autoPlay: Boolean,
+    muted: Boolean,
+    loop: Boolean,
+    gestureSettings: VideoGestureSettings,
+    width: Int,
+    height: Int,
+    onQualitySelected: (MediaQuality) -> Unit,
+) {
     val context = LocalContext.current
-    var fullScreen by rememberSaveable(url) { mutableStateOf(false) }
-    var isMuted by rememberSaveable(url) { mutableStateOf(muted) }
-    var isLooping by rememberSaveable(url) { mutableStateOf(loop) }
-    var playbackSpeed by rememberSaveable(url) { mutableFloatStateOf(1f) }
+    val resources = LocalResources.current
+    val activityWindow = context.findActivity()?.window
+    var fullScreen by rememberSaveable(sources) { mutableStateOf(false) }
+    var volume by rememberSaveable(sources) { mutableFloatStateOf(if (muted) 0f else 1f) }
+    var volumeBeforeMute by rememberSaveable(sources) { mutableFloatStateOf(1f) }
+    var isLooping by rememberSaveable(sources) { mutableStateOf(loop) }
+    var playbackSpeed by rememberSaveable(sources) { mutableFloatStateOf(1f) }
     var isPlaying by remember { mutableStateOf(false) }
+    var isPaused by remember { mutableStateOf(!autoPlay) }
     var position by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
-    val player = remember(url) {
-        ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(context).setDataSourceFactory(DefaultHttpDataSource.Factory().setUserAgent(E430_USER_AGENT)))
-            .build()
-            .apply { setMediaItem(MediaItem.fromUri(url)); prepare() }
+    var controlsVisible by rememberSaveable(sources) { mutableStateOf(true) }
+    var controlMenuExpanded by remember { mutableStateOf(false) }
+    var controlInteraction by remember { mutableIntStateOf(0) }
+    var feedback by remember { mutableStateOf<String?>(null) }
+    var feedbackRevision by remember { mutableIntStateOf(0) }
+    var videoSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var lastDragFinishedAt by remember { mutableLongStateOf(0L) }
+    val originalBrightness = remember(activityWindow) {
+        activityWindow?.let(VideoBrightnessSessions::acquire)
     }
-    LaunchedEffect(autoPlay, url) { player.playWhenReady = autoPlay }
-    LaunchedEffect(muted, url) { isMuted = muted }
-    LaunchedEffect(loop, url) { isLooping = loop }
-    LaunchedEffect(isMuted) { player.volume = if (isMuted) 0f else 1f }
+    var brightness by remember(activityWindow) {
+        mutableFloatStateOf(currentWindowBrightness(context, originalBrightness))
+    }
+    var brightnessAdjusted by remember(activityWindow) { mutableStateOf(false) }
+    val player = remember(sources) {
+        ExoPlayer.Builder(context)
+            .setLoadControl(
+                DefaultLoadControl.Builder()
+                    .setBackBuffer(VIDEO_BACK_BUFFER_MILLIS, true)
+                    .build(),
+            )
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(context).setDataSourceFactory(
+                    VideoPlaybackCache.dataSourceFactory(context),
+                ),
+            )
+            .build()
+            .apply {
+                setMediaItem(MediaItem.fromUri(selectedSource.url))
+                volume = if (muted) 0f else 1f
+                repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                prepare()
+                playWhenReady = autoPlay
+            }
+    }
+    var loadedUrl by remember(player) { mutableStateOf(selectedSource.url) }
+    val isMuted = volume <= 0.001f
+    LaunchedEffect(selectedSource.url) {
+        if (loadedUrl != selectedSource.url) {
+            val resumePosition = player.currentPosition.coerceAtLeast(0L)
+            val resumePlayback = player.playWhenReady
+            player.setMediaItem(MediaItem.fromUri(selectedSource.url))
+            player.prepare()
+            player.seekTo(resumePosition)
+            player.playWhenReady = resumePlayback
+            loadedUrl = selectedSource.url
+        }
+    }
+    LaunchedEffect(autoPlay) { player.playWhenReady = autoPlay }
+    LaunchedEffect(muted) {
+        if (muted) {
+            if (volume > 0.001f) volumeBeforeMute = volume
+            volume = 0f
+        } else if (volume <= 0.001f) {
+            volume = volumeBeforeMute.coerceAtLeast(0.01f)
+        }
+    }
+    LaunchedEffect(volume) { player.volume = volume.coerceIn(0f, 1f) }
     LaunchedEffect(isLooping) {
         player.repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
     }
     LaunchedEffect(playbackSpeed) { player.setPlaybackSpeed(playbackSpeed) }
+    LaunchedEffect(isPlaying, controlsVisible, controlInteraction, controlMenuExpanded) {
+        if (isPlaying && controlsVisible && !controlMenuExpanded) {
+            delay(CONTROLS_HIDE_DELAY_MILLIS)
+            controlsVisible = false
+        }
+    }
+    LaunchedEffect(feedbackRevision) {
+        if (feedbackRevision > 0) {
+            delay(GESTURE_FEEDBACK_MILLIS)
+            feedback = null
+        }
+    }
     LaunchedEffect(player) {
         while (currentCoroutineContext().isActive) {
             position = player.currentPosition.coerceAtLeast(0L)
@@ -453,46 +575,235 @@ private fun VideoPlayer(url: String, autoPlay: Boolean, muted: Boolean, loop: Bo
             delay(400)
         }
     }
+    val latestBrightnessAdjusted by rememberUpdatedState(brightnessAdjusted)
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(value: Boolean) {
                 isPlaying = value
             }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                isPaused = !playWhenReady
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) isPaused = true
+            }
         }
         player.addListener(listener)
+        isPlaying = player.isPlaying
+        isPaused = !player.playWhenReady || player.playbackState == Player.STATE_ENDED
         onDispose {
             player.removeListener(listener)
             player.release()
+            if (latestBrightnessAdjusted && activityWindow != null && originalBrightness != null) {
+                activityWindow.setScreenBrightness(originalBrightness)
+            }
+            activityWindow?.let(VideoBrightnessSessions::release)
         }
     }
+    fun showFeedback(message: String) {
+        feedback = message
+        feedbackRevision += 1
+    }
+    fun revealControls() {
+        controlsVisible = true
+        controlInteraction += 1
+    }
+    fun togglePlayback(revealControlsAfter: Boolean = true) {
+        if (player.isPlaying) {
+            player.pause()
+        } else {
+            if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
+            player.play()
+        }
+        if (revealControlsAfter) revealControls()
+    }
+    fun seekBy(seconds: Int) {
+        val target = (player.currentPosition + seconds * 1_000L)
+            .coerceAtLeast(0L)
+            .let { if (duration > 0L) it.coerceAtMost(duration) else it }
+        player.seekTo(target)
+        showFeedback(
+            resources.getString(
+                if (seconds < 0) R.string.seek_backward_feedback else R.string.seek_forward_feedback,
+                kotlin.math.abs(seconds),
+            ),
+        )
+        revealControls()
+    }
+    val gestureModifier = Modifier
+        .fillMaxSize()
+        .onSizeChanged { videoSize = it }
+        .pointerInput(player, gestureSettings, fullScreen) {
+            detectTapGestures(
+                onTap = {
+                    val now = SystemClock.uptimeMillis()
+                    if (lastDragFinishedAt == 0L || now - lastDragFinishedAt > TAP_AFTER_DRAG_GUARD_MILLIS) {
+                        controlsVisible = !controlsVisible
+                        if (controlsVisible) controlInteraction += 1
+                    }
+                },
+                onDoubleTap = { offset ->
+                    val region = offset.x / size.width.coerceAtLeast(1)
+                    when {
+                        region < 1f / 3f && gestureSettings.doubleTapRewind ->
+                            seekBy(-gestureSettings.rewindSeconds)
+                        region > 2f / 3f && gestureSettings.doubleTapForward ->
+                            seekBy(gestureSettings.forwardSeconds)
+                        region in 1f / 3f..2f / 3f && gestureSettings.doubleTapPlayPause ->
+                            togglePlayback()
+                    }
+                },
+            )
+        }
+        .then(
+            if (gestureSettings.horizontalSwipeSeek ||
+                (fullScreen && (
+                    gestureSettings.fullscreenBrightnessSwipe ||
+                        gestureSettings.fullscreenVolumeSwipe
+                    ))
+            ) {
+                Modifier.pointerInput(player, gestureSettings, fullScreen, videoSize) {
+                    var totalX = 0f
+                    var totalY = 0f
+                    var dragMode = VideoDragMode.None
+                    var startPosition = 0L
+                    var startVolume = 0f
+                    var startBrightness = 0f
+                    var dragStartX = 0f
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            totalX = 0f
+                            totalY = 0f
+                            dragMode = VideoDragMode.None
+                            startPosition = player.currentPosition.coerceAtLeast(0L)
+                            startVolume = volume
+                            startBrightness = brightness
+                            dragStartX = offset.x
+                        },
+                        onDrag = { change, amount ->
+                            totalX += amount.x
+                            totalY += amount.y
+                            if (dragMode == VideoDragMode.None) {
+                                dragMode = if (kotlin.math.abs(totalX) >= kotlin.math.abs(totalY)) {
+                                    if (gestureSettings.horizontalSwipeSeek) VideoDragMode.Seek
+                                    else VideoDragMode.Ignored
+                                } else if (fullScreen && dragStartX < size.width / 2f) {
+                                    if (gestureSettings.fullscreenBrightnessSwipe) VideoDragMode.Brightness
+                                    else VideoDragMode.Ignored
+                                } else if (fullScreen) {
+                                    if (gestureSettings.fullscreenVolumeSwipe) VideoDragMode.Volume
+                                    else VideoDragMode.Ignored
+                                } else {
+                                    VideoDragMode.Ignored
+                                }
+                            }
+                            if (dragMode != VideoDragMode.Ignored) change.consume()
+                            when (dragMode) {
+                                VideoDragMode.Seek -> {
+                                    val fraction = (kotlin.math.abs(totalX) / size.width.coerceAtLeast(1))
+                                        .coerceIn(0f, 1f)
+                                    val seconds = (1f + fraction * 59f).toInt().coerceIn(1, 60)
+                                    val signedSeconds = if (totalX < 0f) -seconds else seconds
+                                    val target = (startPosition + signedSeconds * 1_000L)
+                                        .coerceAtLeast(0L)
+                                        .let { if (duration > 0L) it.coerceAtMost(duration) else it }
+                                    player.seekTo(target)
+                                    showFeedback(
+                                        resources.getString(
+                                            if (signedSeconds < 0) R.string.seek_backward_feedback
+                                            else R.string.seek_forward_feedback,
+                                            kotlin.math.abs(signedSeconds),
+                                        ),
+                                    )
+                                }
+                                VideoDragMode.Brightness -> {
+                                    brightness = (startBrightness - totalY / size.height.coerceAtLeast(1))
+                                        .coerceIn(0.01f, 1f)
+                                    brightnessAdjusted = true
+                                    activityWindow?.setScreenBrightness(brightness)
+                                    showFeedback(
+                                        resources.getString(
+                                            R.string.brightness_feedback,
+                                            (brightness * 100).toInt(),
+                                        ),
+                                    )
+                                }
+                                VideoDragMode.Volume -> {
+                                    volume = (startVolume - totalY / size.height.coerceAtLeast(1))
+                                        .coerceIn(0f, 1f)
+                                    if (volume > 0.001f) volumeBeforeMute = volume
+                                    showFeedback(
+                                        resources.getString(
+                                            R.string.volume_feedback,
+                                            (volume * 100).toInt(),
+                                        ),
+                                    )
+                                }
+                                else -> Unit
+                            }
+                        },
+                        onDragEnd = {
+                            lastDragFinishedAt = SystemClock.uptimeMillis()
+                            revealControls()
+                        },
+                        onDragCancel = {
+                            lastDragFinishedAt = SystemClock.uptimeMillis()
+                            revealControls()
+                        },
+                    )
+                }
+            } else {
+                Modifier
+            },
+        )
     val controls: @Composable (Boolean, () -> Unit) -> Unit = { isFullScreen, onFullScreen ->
         VideoControls(
-            isPlaying = isPlaying,
+            isPlaying = !isPaused,
             isMuted = isMuted,
             isLooping = isLooping,
             playbackSpeed = playbackSpeed,
             position = position,
             duration = duration,
             isFullScreen = isFullScreen,
+            sources = sources,
+            selectedSource = selectedSource,
             onPlayPause = {
-                if (player.isPlaying) {
-                    player.pause()
+                togglePlayback()
+            },
+            onSeek = { player.seekTo(it); revealControls() },
+            onMutedChange = { shouldMute ->
+                if (shouldMute) {
+                    if (volume > 0.001f) volumeBeforeMute = volume
+                    volume = 0f
                 } else {
-                    if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
-                    player.play()
+                    volume = volumeBeforeMute.coerceAtLeast(0.01f)
+                }
+                revealControls()
+            },
+            onLoopingChange = { isLooping = it; revealControls() },
+            onSpeedChange = { playbackSpeed = it; revealControls() },
+            onQualitySelected = { onQualitySelected(it); revealControls() },
+            onMenuExpandedChange = { expanded ->
+                if (controlMenuExpanded != expanded) {
+                    controlMenuExpanded = expanded
+                    if (!expanded) revealControls()
                 }
             },
-            onSeek = player::seekTo,
-            onMutedChange = { isMuted = it },
-            onLoopingChange = { isLooping = it },
-            onSpeedChange = { playbackSpeed = it },
-            onFullScreen = onFullScreen,
+            onFullScreen = { onFullScreen(); revealControls() },
         )
     }
     if (fullScreen) {
         FullScreenVideo(
             player = player,
+            controlsVisible = controlsVisible,
+            isPaused = isPaused,
+            onPlay = { togglePlayback(revealControlsAfter = false) },
             controls = { controls(true) { fullScreen = false } },
+            gestureModifier = gestureModifier,
+            feedback = feedback,
+            screenBrightness = brightness.takeIf { brightnessAdjusted },
             onDismiss = { fullScreen = false },
         )
         Box(
@@ -504,7 +815,12 @@ private fun VideoPlayer(url: String, autoPlay: Boolean, muted: Boolean, loop: Bo
     } else {
         VideoPlayerSurface(
             player = player,
+            controlsVisible = controlsVisible,
+            isPaused = isPaused,
+            onPlay = { togglePlayback(revealControlsAfter = false) },
             controls = { controls(false) { fullScreen = true } },
+            gestureModifier = gestureModifier,
+            feedback = feedback,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio((width.toFloat() / height.coerceAtLeast(1)).coerceIn(0.4f, 2.5f)),
@@ -515,7 +831,12 @@ private fun VideoPlayer(url: String, autoPlay: Boolean, muted: Boolean, loop: Bo
 @Composable
 private fun VideoPlayerSurface(
     player: ExoPlayer,
+    controlsVisible: Boolean,
+    isPaused: Boolean,
+    onPlay: () -> Unit,
     controls: @Composable () -> Unit,
+    gestureModifier: Modifier,
+    feedback: String?,
     modifier: Modifier,
 ) {
     Box(modifier.background(Color.Black)) {
@@ -524,14 +845,45 @@ private fun VideoPlayerSurface(
             update = { it.player = player },
             modifier = Modifier.fillMaxSize(),
         )
-        Box(Modifier.align(Alignment.BottomCenter)) { controls() }
+        Box(gestureModifier)
+        if (isPaused) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.58f),
+                shape = RoundedCornerShape(50),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(56.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    IconButton(onClick = onPlay, modifier = Modifier.fillMaxSize()) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_play),
+                            contentDescription = stringResource(R.string.play),
+                            tint = Color.White,
+                            modifier = Modifier.size(30.dp),
+                        )
+                    }
+                }
+            }
+        }
+        feedback?.let { VideoGestureFeedback(it) }
+        AnimatedVisibility(
+            visible = controlsVisible,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) { controls() }
     }
 }
 
 @Composable
 private fun FullScreenVideo(
     player: ExoPlayer,
+    controlsVisible: Boolean,
+    isPaused: Boolean,
+    onPlay: () -> Unit,
     controls: @Composable () -> Unit,
+    gestureModifier: Modifier,
+    feedback: String?,
+    screenBrightness: Float?,
     onDismiss: () -> Unit,
 ) {
     Dialog(
@@ -545,14 +897,21 @@ private fun FullScreenVideo(
             controller?.hide(WindowInsetsCompat.Type.systemBars())
             onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
         }
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
-            AndroidView(
-                factory = { PlayerView(it).apply { this.player = player; useController = false } },
-                update = { it.player = player },
-                modifier = Modifier.fillMaxSize(),
-            )
-            Box(Modifier.align(Alignment.BottomCenter)) { controls() }
+        LaunchedEffect(window, screenBrightness) {
+            if (window != null && screenBrightness != null) {
+                window.setScreenBrightness(screenBrightness)
+            }
         }
+        VideoPlayerSurface(
+            player = player,
+            controlsVisible = controlsVisible,
+            isPaused = isPaused,
+            onPlay = onPlay,
+            controls = controls,
+            gestureModifier = gestureModifier,
+            feedback = feedback,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 
@@ -565,14 +924,25 @@ private fun VideoControls(
     position: Long,
     duration: Long,
     isFullScreen: Boolean,
+    sources: List<MediaSource>,
+    selectedSource: MediaSource,
     onPlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
     onMutedChange: (Boolean) -> Unit,
     onLoopingChange: (Boolean) -> Unit,
     onSpeedChange: (Float) -> Unit,
+    onQualitySelected: (MediaQuality) -> Unit,
+    onMenuExpandedChange: (Boolean) -> Unit,
     onFullScreen: () -> Unit,
 ) {
     var speedMenuVisible by remember { mutableStateOf(false) }
+    var qualityMenuVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(speedMenuVisible, qualityMenuVisible) {
+        onMenuExpandedChange(speedMenuVisible || qualityMenuVisible)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onMenuExpandedChange(false) }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -587,15 +957,61 @@ private fun VideoControls(
                 .height(24.dp)
                 .padding(horizontal = 8.dp),
         )
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            IconButton(onClick = onPlayPause) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+        ) {
+            IconButton(onClick = onPlayPause, modifier = Modifier.size(44.dp)) {
                 Icon(
                     painterResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
                     stringResource(if (isPlaying) R.string.pause else R.string.play),
                     tint = Color.White,
                 )
             }
-            Spacer(Modifier.weight(1f))
+            Text(
+                text = formatPlaybackTime(position, duration),
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Spacer(Modifier.width(6.dp))
+            Box {
+                TextButton(onClick = { qualityMenuVisible = true }) {
+                    Text(qualityName(selectedSource.quality), color = Color.White)
+                }
+                DropdownMenu(
+                    expanded = qualityMenuVisible,
+                    onDismissRequest = { qualityMenuVisible = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.video_quality)) },
+                        onClick = {},
+                        enabled = false,
+                    )
+                    sources.forEach { source ->
+                        DropdownMenuItem(
+                            text = {
+                                Row(Modifier.fillMaxWidth()) {
+                                    Text(qualityName(source.quality), modifier = Modifier.weight(1f))
+                                    Text(
+                                        stringResource(
+                                            R.string.dimensions_value,
+                                            source.width,
+                                            source.height,
+                                        ),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            },
+                            onClick = {
+                                qualityMenuVisible = false
+                                onQualitySelected(source.quality)
+                            },
+                        )
+                    }
+                }
+            }
             Box {
                 TextButton(onClick = { speedMenuVisible = true }) {
                     Text(stringResource(R.string.playback_speed_value, playbackSpeed), color = Color.White)
@@ -615,21 +1031,21 @@ private fun VideoControls(
                     }
                 }
             }
-            IconButton(onClick = { onLoopingChange(!isLooping) }) {
+            IconButton(onClick = { onLoopingChange(!isLooping) }, modifier = Modifier.size(44.dp)) {
                 Icon(
                     painterResource(R.drawable.ic_repeat),
                     stringResource(if (isLooping) R.string.disable_loop else R.string.enable_loop),
                     tint = if (isLooping) Color(0xFFFCBF31) else Color.White,
                 )
             }
-            IconButton(onClick = { onMutedChange(!isMuted) }) {
+            IconButton(onClick = { onMutedChange(!isMuted) }, modifier = Modifier.size(44.dp)) {
                 Icon(
                     painterResource(if (isMuted) R.drawable.ic_volume_off else R.drawable.ic_volume_on),
                     stringResource(if (isMuted) R.string.unmute else R.string.mute),
                     tint = if (isMuted) Color(0xFFFCBF31) else Color.White,
                 )
             }
-            IconButton(onClick = onFullScreen) {
+            IconButton(onClick = onFullScreen, modifier = Modifier.size(44.dp)) {
                 Icon(
                     painterResource(if (isFullScreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen),
                     stringResource(if (isFullScreen) R.string.exit_fullscreen else R.string.enter_fullscreen),
@@ -641,6 +1057,74 @@ private fun VideoControls(
 }
 
 private val PLAYBACK_SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+private const val CONTROLS_HIDE_DELAY_MILLIS = 3_000L
+private const val GESTURE_FEEDBACK_MILLIS = 700L
+private const val TAP_AFTER_DRAG_GUARD_MILLIS = 250L
+private const val VIDEO_BACK_BUFFER_MILLIS = 120_000
+
+internal fun formatPlaybackTime(positionMillis: Long, durationMillis: Long): String =
+    "${formatMinutesSeconds(positionMillis)}/${formatMinutesSeconds(durationMillis)}"
+
+private fun formatMinutesSeconds(milliseconds: Long): String {
+    val totalSeconds = milliseconds.coerceAtLeast(0L) / 1_000L
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return "%02d:%02d".format(java.util.Locale.ROOT, minutes, seconds)
+}
+
+private enum class VideoDragMode { None, Seek, Brightness, Volume, Ignored }
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private fun currentWindowBrightness(context: Context, windowBrightness: Float?): Float {
+    if (windowBrightness != null && windowBrightness >= 0f) return windowBrightness
+    return runCatching {
+        Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
+    }.getOrDefault(0.5f).coerceIn(0.01f, 1f)
+}
+
+private fun Window.setScreenBrightness(value: Float) {
+    attributes = attributes.apply { screenBrightness = value }
+}
+
+/** Keeps the pre-video brightness stable while old and new detail pages overlap during animation. */
+private object VideoBrightnessSessions {
+    private data class Entry(val original: Float, var holders: Int)
+
+    private val entries = WeakHashMap<Window, Entry>()
+
+    @Synchronized
+    fun acquire(window: Window): Float {
+        val current = entries[window]
+        if (current != null) {
+            current.holders += 1
+            return current.original
+        }
+        return window.attributes.screenBrightness.also { original ->
+            entries[window] = Entry(original = original, holders = 1)
+        }
+    }
+
+    @Synchronized
+    fun release(window: Window) {
+        val current = entries[window] ?: return
+        current.holders -= 1
+        if (current.holders <= 0) entries.remove(window)
+    }
+}
+
+@Composable
+private fun VideoGestureFeedback(message: String) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Surface(color = Color.Black.copy(alpha = 0.72f), shape = RoundedCornerShape(8.dp)) {
+            Text(message, color = Color.White, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+        }
+    }
+}
 
 @Composable
 private fun MediaControlRow(
@@ -784,7 +1268,7 @@ private fun BasicInfo(
     InfoRow(R.string.dimensions, stringResource(R.string.dimensions_value, post.width, post.height))
     InfoRow(R.string.file_size, formatBytes(post.fileSize))
     if (post.md5.isNotBlank()) InfoRow(R.string.md5, post.md5)
-    post.durationSeconds?.let { InfoRow(R.string.duration, stringResource(R.string.seconds_value, it)) }
+    post.durationSeconds?.let { InfoRow(R.string.duration, formatDurationSeconds(it)) }
     InfoRow(R.string.score_breakdown, stringResource(R.string.score_breakdown_value, post.upScore, post.downScore))
     InfoRow(R.string.comment_count, post.commentCount.toString())
     InfoRow(R.string.uploader, stringResource(R.string.user_with_id, post.uploaderName, post.uploaderId))
@@ -812,26 +1296,67 @@ private fun RelatedPreviewGroup(
             style = MaterialTheme.typography.labelLarge,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        RelatedPreviewGrid(
             modifier = Modifier
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
         ) {
             visibleIds.forEach { id ->
                 val preview = previews[id]
                 if (preview == null) {
-                    LoadingBlock(width = 160.dp, height = 210.dp)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(220.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                    )
                 } else {
                     MediaPreviewCard(
                         item = preview,
                         onClick = { onPostClick(id) },
-                        modifier = Modifier.width(160.dp),
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun RelatedPreviewGrid(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Layout(content = content, modifier = modifier) { measurables, constraints ->
+        val spacing = 4.dp.roundToPx()
+        val columnWidth = ((constraints.maxWidth - spacing).coerceAtLeast(0)) / 2
+        val childConstraints = constraints.copy(
+            minWidth = columnWidth,
+            maxWidth = columnWidth,
+            minHeight = 0,
+        )
+        val columnHeights = IntArray(2)
+        val placements = measurables.map { measurable ->
+            val column = if (columnHeights[0] <= columnHeights[1]) 0 else 1
+            val placeable = measurable.measure(childConstraints)
+            val x = column * (columnWidth + spacing)
+            val y = columnHeights[column]
+            columnHeights[column] += placeable.height
+            Triple(placeable, x, y)
+        }
+        layout(constraints.maxWidth, columnHeights.maxOrNull() ?: 0) {
+            placements.forEach { (placeable, x, y) -> placeable.placeRelative(x, y) }
+        }
+    }
+}
+
+internal fun formatDurationSeconds(seconds: Float): String {
+    val roundedSeconds = seconds
+        .takeIf(Float::isFinite)
+        ?.coerceAtLeast(0f)
+        ?.let { value -> kotlin.math.floor(value.toDouble() + 0.5).toLong() }
+        ?: 0L
+    return formatMinutesSeconds(roundedSeconds * 1_000L)
 }
 
 @Composable

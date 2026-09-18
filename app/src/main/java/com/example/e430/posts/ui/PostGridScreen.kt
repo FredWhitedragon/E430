@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -48,9 +49,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -340,20 +344,37 @@ private fun Stat(
     @StringRes description: Int,
     modifier: Modifier = Modifier,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
-        Icon(
-            painter = painterResource(icon),
-            contentDescription = stringResource(description),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(14.dp),
-        )
-        Spacer(modifier = Modifier.width(2.dp))
-        Text(
-            text = value.toString(),
-            fontSize = 11.sp,
-            maxLines = 1,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    val fullValue = value.toString()
+    val compactValue = remember(value) { compactPostStat(value) }
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val textStyle = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp)
+    BoxWithConstraints(modifier) {
+        val availableTextWidth = (maxWidth - 16.dp).coerceAtLeast(0.dp)
+        val fullValueWidth = remember(fullValue, textStyle) {
+            textMeasurer.measure(AnnotatedString(fullValue), style = textStyle).size.width
+        }
+        val displayValue = if (fullValueWidth <= with(density) { availableTextWidth.roundToPx() }) {
+            fullValue
+        } else {
+            compactValue
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Icon(
+                painter = painterResource(icon),
+                contentDescription = stringResource(description),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(modifier = Modifier.width(2.dp))
+            Text(
+                text = displayValue,
+                fontSize = 11.sp,
+                maxLines = 1,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics { contentDescription = fullValue },
+            )
+        }
     }
 }
 

@@ -109,13 +109,15 @@ class PostDetailRepository(
     }
 }
 
-private fun PostDetailDto.toModel(): PostDetail {
+internal fun PostDetailDto.toModel(): PostDetail {
     val kind = when (file.ext.lowercase()) {
         "webm", "mp4" -> MediaKind.Video
         "gif" -> MediaKind.Gif
         else -> MediaKind.Image
     }
-    val original = file.url?.let { MediaSource(MediaQuality.Original, it, file.size) }
+    val original = file.url?.let {
+        MediaSource(MediaQuality.Original, it, file.size, file.width, file.height)
+    }
     val mediumAlternate = sample.alternates.samples["720p"]
         ?: sample.alternates.samples["480p"]
         ?: sample.alternates.variants["mp4"]
@@ -123,11 +125,43 @@ private fun PostDetailDto.toModel(): PostDetail {
     val mediumSize = mediumAlternate?.size?.takeIf { it > 0 }
         ?: estimateSize(file.size, file.width, file.height, sample.width, sample.height)
     val lowSize = estimateSize(file.size, file.width, file.height, preview.width, preview.height)
-    val mediaSources = listOfNotNull(
-        preview.url?.let { MediaSource(MediaQuality.Low, it, lowSize) },
-        mediumUrl?.let { MediaSource(MediaQuality.Medium, it, mediumSize) },
-        original,
-    ).distinctBy { it.url }
+    val mediaSources = if (kind == MediaKind.Video) {
+        val sortedSamples = sample.alternates.samples.values
+            .filter { it.url.isNotBlank() }
+            .sortedBy { it.width.toLong() * it.height }
+        val lowVideo = sample.alternates.samples["480p"] ?: sortedSamples.firstOrNull()
+        val variantVideo = sample.alternates.variants["mp4"]
+            ?.takeIf { it.url.isNotBlank() }
+            ?: sample.alternates.variants.values.firstOrNull { it.url.isNotBlank() }
+        val mediumVideo = sample.alternates.samples["720p"]
+            ?: sortedSamples.lastOrNull()
+            ?: variantVideo
+        listOfNotNull(
+            lowVideo?.let {
+                MediaSource(MediaQuality.Low, it.url, it.size, it.width, it.height)
+            },
+            mediumVideo?.let {
+                MediaSource(MediaQuality.Medium, it.url, it.size, it.width, it.height)
+            },
+            original,
+        ).distinctBy { it.url }
+    } else {
+        listOfNotNull(
+            preview.url?.let {
+                MediaSource(MediaQuality.Low, it, lowSize, preview.width, preview.height)
+            },
+            mediumUrl?.let {
+                MediaSource(
+                    MediaQuality.Medium,
+                    it,
+                    mediumSize,
+                    mediumAlternate?.width ?: sample.width ?: file.width,
+                    mediumAlternate?.height ?: sample.height ?: file.height,
+                )
+            },
+            original,
+        ).distinctBy { it.url }
+    }
     return PostDetail(
         id = id,
         kind = kind,

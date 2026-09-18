@@ -9,6 +9,8 @@ data class MediaSource(
     val quality: MediaQuality,
     val url: String,
     val estimatedBytes: Long,
+    val width: Int = 0,
+    val height: Int = 0,
 )
 
 data class PoolNavigationInfo(

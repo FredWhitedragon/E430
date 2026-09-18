@@ -204,6 +204,7 @@ private fun E430Home(
     val downloadDirectory by settingsViewModel.downloadDirectory.collectAsStateWithLifecycle()
     val prefetchOnMetered by settingsViewModel.prefetchOnMetered.collectAsStateWithLifecycle()
     val videoLoop by settingsViewModel.videoLoop.collectAsStateWithLifecycle()
+    val videoGestureSettings by settingsViewModel.videoGestureSettings.collectAsStateWithLifecycle()
     val appLanguage = remember(context) { AppLanguageManager.selectedLanguage(context) }
     val isNetworkMetered by rememberIsActiveNetworkMetered()
     val prefetchEnabled = !isNetworkMetered || prefetchOnMetered
@@ -518,6 +519,7 @@ private fun E430Home(
                     downloadDirectory = downloadDirectory,
                     prefetchOnMetered = prefetchOnMetered,
                     videoLoop = videoLoop,
+                    videoGestureSettings = videoGestureSettings,
                     onHomeSortChange = { sort ->
                         useExactHomeQuery = false
                         settingsViewModel.setHomeSort(sort)
@@ -539,6 +541,14 @@ private fun E430Home(
                     onDownloadDirectoryChange = settingsViewModel::setDownloadDirectory,
                     onPrefetchOnMeteredChange = settingsViewModel::setPrefetchOnMetered,
                     onVideoLoopChange = settingsViewModel::setVideoLoop,
+                    onVideoDoubleTapPlayPauseChange = settingsViewModel::setVideoDoubleTapPlayPause,
+                    onVideoDoubleTapRewindChange = settingsViewModel::setVideoDoubleTapRewind,
+                    onVideoDoubleTapForwardChange = settingsViewModel::setVideoDoubleTapForward,
+                    onVideoHorizontalSwipeSeekChange = settingsViewModel::setVideoHorizontalSwipeSeek,
+                    onVideoFullscreenBrightnessSwipeChange = settingsViewModel::setVideoFullscreenBrightnessSwipe,
+                    onVideoFullscreenVolumeSwipeChange = settingsViewModel::setVideoFullscreenVolumeSwipe,
+                    onVideoRewindSecondsChange = settingsViewModel::setVideoRewindSeconds,
+                    onVideoForwardSecondsChange = settingsViewModel::setVideoForwardSeconds,
                     scrollState = settingsScrollState,
                     modifier = Modifier.weight(1f),
                 )
@@ -620,6 +630,7 @@ private fun E430Home(
                     videoAutoPlay = videoAutoPlay,
                     videoMuted = videoMuted,
                     videoLoop = videoLoop,
+                    videoGestureSettings = videoGestureSettings,
                     prefetchPostIds = nearbyPostIds,
                     prefetchEnabled = prefetchEnabled,
                     tagsCollapsedByDefault = tagsCollapsed,
@@ -1237,16 +1248,23 @@ private fun LanguageSelector(
     onLanguageChange: (AppLanguage) -> Unit,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
-    val englishLabel = stringResource(R.string.language_english)
-    val simplifiedChineseLabel = stringResource(R.string.language_simplified_chinese)
-    fun label(language: AppLanguage): String = when (language) {
-        AppLanguage.English -> englishLabel
-        AppLanguage.SimplifiedChinese -> simplifiedChineseLabel
+    val context = LocalContext.current
+    val languageLabels = remember(context) {
+        AppLanguage.entries.associateWith { language ->
+            AppLanguageManager.nativeDisplayName(context, language)
+        }
     }
+    fun label(language: AppLanguage): String = languageLabels.getValue(language)
     Box(modifier = Modifier.fillMaxWidth()) {
         NavigationDrawerItem(
             label = { Text(stringResource(R.string.language)) },
             selected = false,
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_language),
+                    contentDescription = null,
+                )
+            },
             badge = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(label(selectedLanguage))
@@ -1262,18 +1280,24 @@ private fun LanguageSelector(
             onClick = { expanded = true },
             modifier = Modifier.padding(horizontal = 12.dp),
         )
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .size(1.dp),
         ) {
-            AppLanguage.entries.forEach { language ->
-                DropdownMenuItem(
-                    text = { Text(label(language)) },
-                    onClick = {
-                        expanded = false
-                        if (language != selectedLanguage) onLanguageChange(language)
-                    },
-                )
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                AppLanguage.entries.forEach { language ->
+                    DropdownMenuItem(
+                        text = { Text(label(language)) },
+                        onClick = {
+                            expanded = false
+                            if (language != selectedLanguage) onLanguageChange(language)
+                        },
+                    )
+                }
             }
         }
     }

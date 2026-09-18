@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.res.Configuration
 import android.os.LocaleList
 import androidx.core.content.edit
+import com.example.e430.R
 import com.example.e430.settings.model.AppLanguage
 import java.util.Locale
 
@@ -36,6 +37,16 @@ object AppLanguageManager {
 
     fun setLanguage(context: Context, language: AppLanguage) {
         save(context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE), language)
+    }
+
+    /** Reads the shared language_id resource using that language's own configuration. */
+    fun nativeDisplayName(context: Context, language: AppLanguage): String {
+        val locale = Locale.forLanguageTag(language.languageTag)
+        val localizedConfiguration = Configuration(context.resources.configuration).apply {
+            setLocale(locale)
+            setLocales(LocaleList(locale))
+        }
+        return context.createConfigurationContext(localizedConfiguration).getString(R.string.language_id)
     }
 
     @SuppressLint("ApplySharedPref")

@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.e430.posts.model.HomeSort
 import com.example.e430.settings.data.SettingsRepository
 import com.example.e430.settings.model.ImageQualityPreference
+import com.example.e430.settings.model.VideoGestureSettings
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -35,6 +36,11 @@ class SettingsViewModel(
     val downloadDirectory = repository.downloadDirectory.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "E430")
     val prefetchOnMetered = repository.prefetchOnMetered.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val videoLoop = repository.videoLoop.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val videoGestureSettings = repository.videoGestureSettings.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        VideoGestureSettings(),
+    )
     fun setHomeSort(sort: HomeSort) {
         viewModelScope.launch { repository.setHomeSort(sort) }
     }
@@ -47,6 +53,14 @@ class SettingsViewModel(
     fun setDownloadDirectory(value: String) = launch { repository.setDownloadDirectory(value) }
     fun setPrefetchOnMetered(value: Boolean) = launch { repository.setPrefetchOnMetered(value) }
     fun setVideoLoop(value: Boolean) = launch { repository.setVideoLoop(value) }
+    fun setVideoDoubleTapPlayPause(value: Boolean) = launch { repository.setVideoDoubleTapPlayPause(value) }
+    fun setVideoDoubleTapRewind(value: Boolean) = launch { repository.setVideoDoubleTapRewind(value) }
+    fun setVideoDoubleTapForward(value: Boolean) = launch { repository.setVideoDoubleTapForward(value) }
+    fun setVideoHorizontalSwipeSeek(value: Boolean) = launch { repository.setVideoHorizontalSwipeSeek(value) }
+    fun setVideoFullscreenBrightnessSwipe(value: Boolean) = launch { repository.setVideoFullscreenBrightnessSwipe(value) }
+    fun setVideoFullscreenVolumeSwipe(value: Boolean) = launch { repository.setVideoFullscreenVolumeSwipe(value) }
+    fun setVideoRewindSeconds(value: Int) = launch { repository.setVideoRewindSeconds(value) }
+    fun setVideoForwardSeconds(value: Int) = launch { repository.setVideoForwardSeconds(value) }
 
     private fun launch(block: suspend () -> Unit) {
         viewModelScope.launch { block() }

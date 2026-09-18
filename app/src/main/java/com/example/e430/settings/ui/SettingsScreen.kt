@@ -21,6 +21,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,11 +29,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardOptions
 import com.example.e430.R
 import com.example.e430.posts.model.HomeSort
 import com.example.e430.presets.model.SearchPreset
 import com.example.e430.settings.model.ImageQualityPreference
+import com.example.e430.settings.model.VideoGestureSettings
 
 @Composable
 fun SettingsScreen(
@@ -47,6 +51,7 @@ fun SettingsScreen(
     downloadDirectory: String,
     prefetchOnMetered: Boolean,
     videoLoop: Boolean,
+    videoGestureSettings: VideoGestureSettings,
     onHomeSortChange: (HomeSort) -> Unit,
     onPresetSelected: (SearchPreset) -> Unit,
     onCreatePreset: () -> Unit,
@@ -58,6 +63,14 @@ fun SettingsScreen(
     onDownloadDirectoryChange: (String) -> Unit,
     onPrefetchOnMeteredChange: (Boolean) -> Unit,
     onVideoLoopChange: (Boolean) -> Unit,
+    onVideoDoubleTapPlayPauseChange: (Boolean) -> Unit,
+    onVideoDoubleTapRewindChange: (Boolean) -> Unit,
+    onVideoDoubleTapForwardChange: (Boolean) -> Unit,
+    onVideoHorizontalSwipeSeekChange: (Boolean) -> Unit,
+    onVideoFullscreenBrightnessSwipeChange: (Boolean) -> Unit,
+    onVideoFullscreenVolumeSwipeChange: (Boolean) -> Unit,
+    onVideoRewindSecondsChange: (Int) -> Unit,
+    onVideoForwardSecondsChange: (Int) -> Unit,
     modifier: Modifier = Modifier,
     scrollState: ScrollState = rememberScrollState(),
 ) {
@@ -162,6 +175,52 @@ fun SettingsScreen(
             checked = videoLoop,
             onCheckedChange = onVideoLoopChange,
         )
+        Text(
+            text = stringResource(R.string.video_gestures),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(top = 20.dp),
+        )
+        SettingsSwitchRow(
+            title = stringResource(R.string.video_double_tap_play_pause),
+            checked = videoGestureSettings.doubleTapPlayPause,
+            onCheckedChange = onVideoDoubleTapPlayPauseChange,
+        )
+        SettingsSwitchRow(
+            title = stringResource(R.string.video_double_tap_rewind),
+            checked = videoGestureSettings.doubleTapRewind,
+            onCheckedChange = onVideoDoubleTapRewindChange,
+        )
+        SettingsSwitchRow(
+            title = stringResource(R.string.video_double_tap_forward),
+            checked = videoGestureSettings.doubleTapForward,
+            onCheckedChange = onVideoDoubleTapForwardChange,
+        )
+        SeekSecondsSelector(
+            title = stringResource(R.string.video_rewind_seconds),
+            value = videoGestureSettings.rewindSeconds,
+            onValueChange = onVideoRewindSecondsChange,
+        )
+        SeekSecondsSelector(
+            title = stringResource(R.string.video_forward_seconds),
+            value = videoGestureSettings.forwardSeconds,
+            onValueChange = onVideoForwardSecondsChange,
+        )
+        SettingsSwitchRow(
+            title = stringResource(R.string.video_horizontal_swipe_seek),
+            checked = videoGestureSettings.horizontalSwipeSeek,
+            onCheckedChange = onVideoHorizontalSwipeSeekChange,
+        )
+        SettingsSwitchRow(
+            title = stringResource(R.string.video_fullscreen_brightness_swipe),
+            checked = videoGestureSettings.fullscreenBrightnessSwipe,
+            onCheckedChange = onVideoFullscreenBrightnessSwipeChange,
+        )
+        SettingsSwitchRow(
+            title = stringResource(R.string.video_fullscreen_volume_swipe),
+            checked = videoGestureSettings.fullscreenVolumeSwipe,
+            onCheckedChange = onVideoFullscreenVolumeSwipeChange,
+        )
         SettingsSwitchRow(
             title = stringResource(R.string.tags_collapsed_default),
             checked = tagsCollapsed,
@@ -176,6 +235,78 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 12.dp, bottom = 24.dp),
+        )
+    }
+}
+
+@Composable
+private fun SeekSecondsSelector(
+    title: String,
+    value: Int,
+    onValueChange: (Int) -> Unit,
+) {
+    val presetValues = listOf(3, 5, 10)
+    var customMode by remember { mutableStateOf(value !in presetValues) }
+    var customText by remember(value) { mutableStateOf(value.toString()) }
+    LaunchedEffect(value) {
+        customMode = value !in presetValues
+    }
+    Text(
+        text = title,
+        color = MaterialTheme.colorScheme.onSurface,
+        style = MaterialTheme.typography.bodyLarge,
+        modifier = Modifier.padding(top = 8.dp),
+    )
+    Row(modifier = Modifier.fillMaxWidth()) {
+        presetValues.forEach { seconds ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable {
+                        customMode = false
+                        onValueChange(seconds)
+                    },
+            ) {
+                RadioButton(
+                    selected = !customMode && value == seconds,
+                    onClick = {
+                        customMode = false
+                        onValueChange(seconds)
+                    },
+                )
+                Text(
+                    text = stringResource(R.string.seconds_short, seconds),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { customMode = true },
+    ) {
+        RadioButton(selected = customMode, onClick = { customMode = true })
+        Text(
+            text = stringResource(R.string.custom),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+    if (customMode) {
+        OutlinedTextField(
+            value = customText,
+            onValueChange = { entered ->
+                val digits = entered.filter(Char::isDigit)
+                customText = digits
+                digits.toIntOrNull()?.takeIf { it > 0 }?.let(onValueChange)
+            },
+            label = { Text(stringResource(R.string.video_custom_seconds)) },
+            supportingText = { Text(stringResource(R.string.video_positive_seconds_hint)) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }
